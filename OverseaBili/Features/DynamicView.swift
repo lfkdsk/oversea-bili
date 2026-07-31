@@ -15,7 +15,30 @@ final class DynamicViewModel: ObservableObject {
     func initialLoad(mid: Int?) async {
         guard !loadedOnce else { return }
         loadedOnce = true
+        // 调试:-mockDynamic YES 用假数据检查布局(动态需登录,模拟器上没法真看)
+        if UserDefaults.standard.bool(forKey: "mockDynamic") {
+            loadMock()
+            return
+        }
         await reload(mid: mid)
+    }
+
+    private func loadMock() {
+        let names = ["老番茄", "何同学", "影视飓风", "半佛仙人", "罗翔说刑法", "李子柒", "TESTV", "小艾大叔"]
+        ups = names.enumerated().map { index, name in
+            DynUpItem(mid: index + 1, uname: name, face: nil, hasUpdate: index % 3 == 0)
+        }
+        rows = (1...12).map { index in
+            DynVideoRow(
+                id: "mock\(index)",
+                bvid: "BV1mock\(index)",
+                title: "示例视频标题 \(index):这是一个用于检查布局的较长标题",
+                cover: nil,
+                durationText: "12:34",
+                authorName: names[index % names.count],
+                pubTime: "07-30"
+            )
+        }
     }
 
     func selectUp(_ upMid: Int?, mid: Int?) {
@@ -71,9 +94,11 @@ struct DynamicView: View {
     @StateObject private var vm = DynamicViewModel()
     @State private var showLogin = false
 
+    private var mockMode: Bool { UserDefaults.standard.bool(forKey: "mockDynamic") }
+
     var body: some View {
         Group {
-            if !auth.isLoggedIn {
+            if !auth.isLoggedIn, !mockMode {
                 HintView(icon: "person.2", text: "登录后查看关注 UP 主的最新投稿",
                          actionTitle: "扫码登录") { showLogin = true }
             } else {
@@ -155,9 +180,15 @@ struct DynamicView: View {
                 selected: vm.selectedUp == mid
             )
         }
-        .buttonStyle(.plain)
-        // 默认按钮背景是圆角矩形,会在圆形头像外露出方角
-        .clipShape(Circle())
+        .buttonStyle(BareButtonStyle())
+    }
+}
+
+/// 无任何背景/裁剪的按钮样式:焦点表现完全由 label 自己画。
+/// (系统 .plain 在 tvOS 聚焦时仍会画圆角矩形底,而整体加 Circle 裁剪又会切掉下方文字。)
+private struct BareButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
     }
 }
 
