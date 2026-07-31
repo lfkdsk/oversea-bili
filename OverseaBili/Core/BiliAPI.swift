@@ -17,6 +17,14 @@ enum LoginAPI {
     static func nav() async throws -> NavData {
         try await BiliClient.shared.get("https://api.bilibili.com/x/web-interface/nav", allowCodes: [-101])
     }
+
+    /// Cookie 是否需要续期。
+    static func cookieNeedsRefresh() async -> (needed: Bool, timestamp: Int)? {
+        guard let data: CookieInfoData = try? await BiliClient.shared.get(
+            "https://passport.bilibili.com/x/passport-login/web/cookie/info"
+        ), let timestamp = data.timestamp else { return nil }
+        return (data.refresh ?? false, timestamp)
+    }
 }
 
 enum FeedAPI {
@@ -72,13 +80,38 @@ enum VideoAPI {
         )
     }
 
-    /// 服务端续播进度(需登录,跨设备)。
+    /// 服务端续播进度 + 字幕列表(需登录,跨设备)。
     static func playerV2(aid: Int, cid: Int) async throws -> PlayerV2Data {
         try await BiliClient.shared.get(
             "https://api.bilibili.com/x/player/wbi/v2",
             query: ["aid": String(aid), "cid": String(cid)],
             wbi: true
         )
+    }
+
+    /// 下载并转换字幕为 WebVTT。
+    static func subtitleVTT(from track: SubtitleTrack) async -> String? {
+        guard let urlString = track.url, let url = URL(string: urlString) else { return nil }
+        guard let (data, _) = try? await BiliClient.shared.session.data(for: BiliClient.shared.makeRequest(url)),
+              let doc = try? JSONDecoder().decode(SubtitleDoc.self, from: data),
+              let lines = doc.body, !lines.isEmpty else { return nil }
+
+        func stamp(_ seconds: Double) -> String {
+            let total = max(0, seconds)
+            let h = Int(total) / 3600
+            let m = (Int(total) % 3600) / 60
+            let s = Int(total) % 60
+            let ms = Int((total - floor(total)) * 1000)
+            return String(format: "%02d:%02d:%02d.%03d", h, m, s, ms)
+        }
+
+        var out = "WEBVTT\n\n"
+        for (index, line) in lines.enumerated() {
+            guard let from = line.from, let to = line.to, to > from,
+                  let text = line.content, !text.isEmpty else { continue }
+            out += "\(index + 1)\n\(stamp(from)) --> \(stamp(to))\n\(text)\n\n"
+        }
+        return out
     }
 
     static func related(bvid: String) async throws -> [VideoItem] {
@@ -144,6 +177,31 @@ enum ActionAPI {
         try await BiliClient.shared.postAction(
             "https://api.bilibili.com/x/v3/fav/resource/deal",
             form: ["rid": String(aid), "type": "2", "add_media_ids": String(folder.id)]
+        )
+    }
+
+    /// 一键三连。
+    static func triple(aid: Int) async throws {
+        try await BiliClient.shared.postAction(
+            "https://api.bilibili.com/x/web-interface/archive/like/triple",
+            form: ["aid": String(aid)]
+        )
+    }
+
+    /// 关注状态(attribute:0 未关注 / 2 已关注 / 6 互关)。
+    static func relation(mid: Int) async -> Int? {
+        let data: RelationData? = try? await BiliClient.shared.get(
+            "https://api.bilibili.com/x/relation",
+            query: ["fid": String(mid)]
+        )
+        return data?.attribute
+    }
+
+    /// act:1 关注 / 2 取关。
+    static func modifyRelation(mid: Int, follow: Bool) async throws {
+        try await BiliClient.shared.postAction(
+            "https://api.bilibili.com/x/relation/modify",
+            form: ["fid": String(mid), "act": follow ? "1" : "2", "re_src": "11"]
         )
     }
 

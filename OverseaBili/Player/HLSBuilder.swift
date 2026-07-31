@@ -12,7 +12,8 @@ enum HLSBuilder {
 
     static func base(port: UInt16) -> String { "http://127.0.0.1:\(port)" }
 
-    static func master(base: String, video: DashTrack, audio: DashTrack?) -> String {
+    static func master(base: String, video: DashTrack, audio: DashTrack?,
+                       subtitles: [(track: SubtitleTrack, path: String)] = []) -> String {
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
         var codecs = video.codecs ?? "avc1.640028"
         if let audio {
@@ -20,6 +21,14 @@ enum HLSBuilder {
                 "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"音轨\",DEFAULT=YES,AUTOSELECT=YES,URI=\"\(base)\(audioPlaylistPath)\""
             )
             codecs += ",\(audio.codecs ?? "mp4a.40.2")"
+        }
+        for (index, item) in subtitles.enumerated() {
+            let name = item.track.lanDoc ?? item.track.lan ?? "字幕\(index + 1)"
+            let lang = item.track.lan ?? "zh"
+            lines.append(
+                "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"\(name)\",LANGUAGE=\"\(lang)\","
+                    + "DEFAULT=NO,AUTOSELECT=NO,FORCED=NO,URI=\"\(base)\(item.path).m3u8\""
+            )
         }
         let bandwidth = (video.bandwidth ?? 1_000_000) + (audio?.bandwidth ?? 0)
         var inf = "#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth),CODECS=\"\(codecs)\""
@@ -30,9 +39,26 @@ enum HLSBuilder {
             inf += ",FRAME-RATE=\(String(format: "%.3f", value))"
         }
         if audio != nil { inf += ",AUDIO=\"aud\"" }
+        if !subtitles.isEmpty { inf += ",SUBTITLES=\"subs\"" }
         lines.append(inf)
         lines.append("\(base)\(videoPlaylistPath)")
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// 字幕轨的媒体播放列表:整段 WebVTT 作为单个分段。
+    static func subtitlePlaylist(base: String, path: String, duration: Double) -> String {
+        let total = max(1, ceil(duration))
+        return """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:\(Int(total))
+        #EXT-X-MEDIA-SEQUENCE:0
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXTINF:\(String(format: "%.3f", total)),
+        \(base)\(path)
+        #EXT-X-ENDLIST
+
+        """
     }
 
     /// `initEnd`:init + sidx 的末字节(含),MAP 段覆盖 0...initEnd。

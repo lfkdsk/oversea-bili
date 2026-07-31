@@ -34,6 +34,7 @@ final class LoginViewModel: ObservableObject {
             let result = try await LoginAPI.poll(key: key)
             switch result.code {
             case 0:
+                LoginExpiry.needsRelogin = false
                 loginState = .success
                 statusText = "登录成功!"
                 succeeded = true

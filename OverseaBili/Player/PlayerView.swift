@@ -6,6 +6,7 @@ struct PlayerScreen: View {
 
     @StateObject private var vm = PlayerViewModel()
     @Environment(\.dismiss) private var dismiss
+    @State private var playingBvid = ""
 
     var body: some View {
         ZStack {
@@ -87,8 +88,19 @@ struct PlayerScreen: View {
         }
         .animation(.easeInOut(duration: 0.25), value: vm.resumeNotice)
         .animation(.easeInOut(duration: 0.2), value: vm.timeControl)
-        .task {
-            await vm.load(bvid: bvid)
+        .task(id: playingBvid) {
+            guard !playingBvid.isEmpty else { return }
+            // 自动连播:播完接下一个视频,复用同一个播放器
+            vm.onPlayNext = { next in
+                Task { @MainActor in
+                    vm.stop()
+                    playingBvid = next
+                }
+            }
+            await vm.load(bvid: playingBvid)
+        }
+        .onAppear {
+            if playingBvid.isEmpty { playingBvid = bvid }
         }
         .onDisappear {
             vm.stop()
@@ -161,6 +173,22 @@ struct PlayerHost: UIViewControllerRepresentable {
     private func buildMenus() -> [UIMenuElement] {
         let model = vm
         var items: [UIMenuElement] = []
+        if model.pages.count > 1 {
+            let actions = model.pages.enumerated().map { index, page in
+                UIAction(
+                    title: page.part?.isEmpty == false ? "P\(page.page) \(page.part!)" : "P\(page.page)",
+                    state: index == model.currentPageIndex ? .on : .off
+                ) { _ in
+                    Task { @MainActor in model.switchPage(index) }
+                }
+            }
+            items.append(UIMenu(
+                title: "选集(\(model.pages.count)P)",
+                image: UIImage(systemName: "list.number"),
+                options: .singleSelection,
+                children: actions
+            ))
+        }
         if model.availableQualities.count > 1 {
             let actions = model.availableQualities.map { option in
                 UIAction(

@@ -174,10 +174,60 @@ struct UpVideoRow: Identifiable {
     let duration: String
 }
 
-/// x/player/wbi/v2:携带服务端续播进度(毫秒)。
+/// x/player/wbi/v2:续播进度(毫秒)+ 字幕列表。
 struct PlayerV2Data: Decodable {
     let lastPlayTime: Int?
     let lastPlayCid: Int?
+    let subtitle: SubtitleInfo?
+
+    struct SubtitleInfo: Decodable {
+        let subtitles: [SubtitleTrack]?
+    }
+}
+
+struct SubtitleTrack: Decodable, Identifiable {
+    let id: Int?
+    let lan: String?
+    let lanDoc: String?
+    let subtitleUrl: String?
+    /// AI 生成字幕标记
+    let type: Int?
+
+    var identifier: String { lan ?? String(id ?? 0) }
+    var url: String? {
+        guard var raw = subtitleUrl, !raw.isEmpty else { return nil }
+        if raw.hasPrefix("//") { raw = "https:" + raw }
+        return raw
+    }
+}
+
+/// 字幕 JSON(bilibili 自有格式)。
+struct SubtitleDoc: Decodable {
+    let body: [Line]?
+
+    struct Line: Decodable {
+        let from: Double?
+        let to: Double?
+        let content: String?
+    }
+}
+
+// MARK: - Cookie 续期
+
+struct CookieInfoData: Decodable {
+    let refresh: Bool?
+    let timestamp: Int?
+}
+
+struct CookieRefreshData: Decodable {
+    let status: Int?
+    let message: String?
+    let refreshToken: String?
+}
+
+struct RelationData: Decodable {
+    /// 0 未关注 / 1 悄悄关注 / 2 已关注 / 6 互关
+    let attribute: Int?
 }
 
 struct Durl: Decodable {

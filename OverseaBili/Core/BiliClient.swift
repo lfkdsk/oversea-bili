@@ -199,6 +199,24 @@ final class BiliClient {
         init(from decoder: Decoder) throws {}
     }
 
+    /// 表单 POST 并解析返回数据(不自动附加 csrf,调用方自行传)。
+    func postForm<T: Decodable>(_ base: String, form: [String: String]) async throws -> T {
+        guard let url = URL(string: base) else { throw BiliError.badURL }
+        var req = makeRequest(url)
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let body = form.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0.value)" }
+            .joined(separator: "&")
+        req.httpBody = Data(body.utf8)
+        let (data, _) = try await session.data(for: req)
+        let wrapped = try decoder.decode(BiliResponse<T>.self, from: data)
+        guard wrapped.code == 0 else {
+            throw BiliError.api(code: wrapped.code, message: wrapped.message ?? "")
+        }
+        guard let payload = wrapped.data else { throw BiliError.emptyData }
+        return payload
+    }
+
     /// 表单 POST,只关心 code 是否为 0。自动附加 csrf。
     func postAction(_ base: String, form: [String: String]) async throws {
         guard let csrf else { throw BiliError.api(code: -101, message: "未登录") }

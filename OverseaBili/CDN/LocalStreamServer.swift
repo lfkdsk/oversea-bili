@@ -8,6 +8,7 @@ import Network
 final class LocalStreamServer {
     enum Route {
         case playlist(String)
+        case text(content: String, mime: String)
         case media(engine: ChunkEngine, length: Int64, mime: String)
     }
 
@@ -133,7 +134,9 @@ final class LocalStreamServer {
 
         switch route {
         case .playlist(let text):
-            servePlaylist(connection, text: text, range: range)
+            serveText(connection, text: text, mime: "application/vnd.apple.mpegurl", range: range)
+        case .text(let content, let mime):
+            serveText(connection, text: content, mime: mime, range: range)
         case .media(let engine, let length, let mime):
             serveMedia(connection, engine: engine, length: length, mime: mime, range: range)
         }
@@ -146,7 +149,7 @@ final class LocalStreamServer {
         })
     }
 
-    private func servePlaylist(_ connection: NWConnection, text: String, range: (start: Int64, end: Int64?)?) {
+    private func serveText(_ connection: NWConnection, text: String, mime: String, range: (start: Int64, end: Int64?)?) {
         let full = Data(text.utf8)
         let total = Int64(full.count)
         var body = full
@@ -163,7 +166,7 @@ final class LocalStreamServer {
             status = "206 Partial Content"
             extra = "Content-Range: bytes \(start)-\(end)/\(total)\r\n"
         }
-        let head = "HTTP/1.1 \(status)\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: \(body.count)\r\nAccept-Ranges: bytes\r\n\(extra)Connection: close\r\n\r\n"
+        let head = "HTTP/1.1 \(status)\r\nContent-Type: \(mime)\r\nContent-Length: \(body.count)\r\nAccept-Ranges: bytes\r\n\(extra)Connection: close\r\n\r\n"
         var payload = Data(head.utf8)
         payload.append(body)
         connection.send(content: payload, completion: .contentProcessed { _ in

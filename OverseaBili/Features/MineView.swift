@@ -138,6 +138,22 @@ struct MineView: View {
             }
             .padding(.bottom, 24)
 
+            if auth.needsRelogin {
+                Button {
+                    showLogin = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                        Text("登录即将过期,点此重新扫码")
+                            .font(.caption)
+                            .lineLimit(2)
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .buttonStyle(.bordered)
+            }
+
             sideButton("观看历史", icon: "clock.arrow.circlepath", section: .history)
             sideButton("稍后再看", icon: "text.badge.plus", section: .toview)
             ForEach(vm.folders.prefix(6), id: \.id) { folder in

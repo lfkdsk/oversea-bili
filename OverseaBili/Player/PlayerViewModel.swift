@@ -81,6 +81,12 @@ final class PlayerViewModel: ObservableObject {
     @Published var timeControl: AVPlayer.TimeControlStatus = .waitingToPlayAtSpecifiedRate
     /// "已从 xx:xx 续播" 提示
     @Published var resumeNotice: String?
+    /// 多 P 分集
+    @Published var pages: [PageInfo] = []
+    @Published var currentPageIndex = 0
+    /// 播完接下一个(多 P 下一集,否则相关推荐第一个)
+    @Published var upNext: (bvid: String, title: String)?
+    var onPlayNext: ((String) -> Void)?
 
     let player = AVPlayer()
     let danmaku = DanmakuManager()
@@ -101,6 +107,10 @@ final class PlayerViewModel: ObservableObject {
     private var lastTickSeconds: Double = -1
     private var lastLocalSave: Double = 0
     private var lastReportAt = Date.distantPast
+    private var endObserver: NSObjectProtocol?
+    private var activeCid: Int?
+    private var subtitleTracks: [SubtitleTrack] = []
+    private var subtitleFiles: [Int: URL] = [:]
     private var stallObserver: NSObjectProtocol?
     private var timeObserver: Any?
     private var probeTask: Task<Void, Never>?
@@ -123,6 +133,9 @@ final class PlayerViewModel: ObservableObject {
             let detail = try await VideoAPI.detail(bvid: bvid)
             self.detail = detail
             videoTitle = detail.title
+            pages = detail.pages ?? []
+            currentPageIndex = 0
+            activeCid = detail.cid
             danmaku.configure(cid: detail.cid, aid: detail.aid, duration: Double(detail.duration ?? 0))
             danmaku.onDanmaku = { [weak self] danmus in
                 self?.danmakuOverlay?.add(danmus)
@@ -186,7 +199,8 @@ final class PlayerViewModel: ObservableObject {
         guard let detail else { return }
         teardownPipeline()
         state = .loading("正在获取播放地址…")
-        let play = try await VideoAPI.playURLDash(bvid: bvid, cid: detail.cid)
+        let cid = activeCid ?? detail.cid
+        let play = try await VideoAPI.playURLDash(bvid: bvid, cid: cid)
         let labels = play.qualityLabels
         if let dash = play.dash, let video = Self.pickVideo(dash.video ?? [], targetQN: targetQN) {
             try await buildDash(dash: dash, video: video, labels: labels, seekTo: seekTo)
@@ -284,7 +298,26 @@ final class PlayerViewModel: ObservableObject {
             }
         }
 
-        server.setRoute(HLSBuilder.masterPath, .playlist(HLSBuilder.master(base: base, video: video, audio: audioTrack)))
+        // 字幕(登录后可用):下载转 WebVTT,作为独立字幕轨挂进 master
+        var subtitles: [(track: SubtitleTrack, path: String)] = []
+        if BiliClient.shared.csrf != nil {
+            subtitles = await prepareSubtitles(aid: detail?.aid ?? 0, cid: activeCid ?? 0)
+            let duration = Double(detail?.duration ?? 0)
+            for item in subtitles {
+                if let vtt = subtitleVTTs[item.path] {
+                    server.setRoute(item.path, .text(content: vtt, mime: "text/vtt"))
+                    server.setRoute(
+                        item.path + ".m3u8",
+                        .playlist(HLSBuilder.subtitlePlaylist(base: base, path: item.path, duration: duration))
+                    )
+                }
+            }
+        }
+
+        server.setRoute(
+            HLSBuilder.masterPath,
+            .playlist(HLSBuilder.master(base: base, video: video, audio: audioTrack, subtitles: subtitles))
+        )
 
         guard let url = URL(string: base + HLSBuilder.masterPath) else {
             throw BiliError.badURL
@@ -307,6 +340,7 @@ final class PlayerViewModel: ObservableObject {
         }
         startBackgroundProbe()
         startPeriodicProbe()
+        Task { [weak self] in await self?.prepareUpNext() }
     }
 
     struct IndexResult {
@@ -422,6 +456,12 @@ final class PlayerViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.handleStall() }
         }
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.handlePlaybackEnded() }
+        }
 
         player.replaceCurrentItem(with: item)
         if let seekTo, seekTo.seconds.isFinite, seekTo.seconds > 1 {
@@ -480,6 +520,62 @@ final class PlayerViewModel: ObservableObject {
             }
         }
     }
+
+    // MARK: - 多 P / 连播 / 字幕
+
+    /// 切换分 P(换 cid 重建管线,弹幕同步换轨)。
+    func switchPage(_ index: Int) {
+        guard index >= 0, index < pages.count, index != currentPageIndex, let detail else { return }
+        currentPageIndex = index
+        activeCid = pages[index].cid
+        danmaku.configure(cid: pages[index].cid, aid: detail.aid, duration: Double(detail.duration ?? 0))
+        danmakuOverlay?.clear()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.buildPipeline(seekTo: nil)
+            } catch {
+                self.fail(error)
+            }
+        }
+    }
+
+    /// 播完后的下一个:多 P 优先下一集,否则相关推荐第一个。
+    private func prepareUpNext() async {
+        if currentPageIndex + 1 < pages.count {
+            let next = pages[currentPageIndex + 1]
+            upNext = (bvid, next.part ?? "第 \(next.page) P")
+            return
+        }
+        if let related = try? await VideoAPI.related(bvid: bvid), let first = related.first {
+            upNext = (first.bvid, first.title)
+        }
+    }
+
+    private func handlePlaybackEnded() {
+        guard let upNext else { return }
+        if upNext.bvid == bvid, currentPageIndex + 1 < pages.count {
+            switchPage(currentPageIndex + 1)
+        } else {
+            onPlayNext?(upNext.bvid)
+        }
+    }
+
+    /// 下载字幕并挂到播放列表(仅 HLS 管线;登录后 player/v2 才返回字幕)。
+    private func prepareSubtitles(aid: Int, cid: Int) async -> [(track: SubtitleTrack, path: String)] {
+        guard let v2 = try? await VideoAPI.playerV2(aid: aid, cid: cid),
+              let tracks = v2.subtitle?.subtitles, !tracks.isEmpty else { return [] }
+        var out: [(SubtitleTrack, String)] = []
+        for (index, track) in tracks.prefix(3).enumerated() {
+            guard let vtt = await VideoAPI.subtitleVTT(from: track) else { continue }
+            out.append((track, "/subtitle-\(index).vtt"))
+            subtitleVTTs["/subtitle-\(index).vtt"] = vtt
+        }
+        subtitleTracks = out.map(\.0)
+        return out.map { (track: $0.0, path: $0.1) }
+    }
+
+    private var subtitleVTTs: [String: String] = [:]
 
     // MARK: - 用户操作
 
@@ -577,6 +673,8 @@ final class PlayerViewModel: ObservableObject {
         statusObservation = nil
         if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
         stallObserver = nil
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = nil
         server?.stop()
         server = nil
         videoEngine?.shutdown()

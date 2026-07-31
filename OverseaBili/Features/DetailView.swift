@@ -8,6 +8,7 @@ final class DetailViewModel: ObservableObject {
     @Published var coined = false
     @Published var favoured = false
     @Published var toViewAdded = false
+    @Published var following = false
     @Published var loading = true
     @Published var errorText: String?
     @Published var message: String?
@@ -28,6 +29,10 @@ final class DetailViewModel: ObservableObject {
                 liked = await likedState
                 coined = await coinState > 0
                 favoured = await favState
+                if let mid = detail.owner?.mid {
+                    let attribute = await ActionAPI.relation(mid: mid) ?? 0
+                    following = attribute == 2 || attribute == 6
+                }
             }
         } catch {
             errorText = (error as? BiliError)?.errorDescription ?? error.localizedDescription
@@ -88,6 +93,35 @@ final class DetailViewModel: ObservableObject {
                 try await ActionAPI.favorite(aid: aid, mid: mid)
                 favoured = true
                 toast("已收藏 ⭐")
+            } catch {
+                toast(errorText(of: error))
+            }
+        }
+    }
+
+    /// 一键三连(点赞 + 投币 + 收藏)。
+    func triple() {
+        guard let aid = requireLoginAid() else { return }
+        Task {
+            do {
+                try await ActionAPI.triple(aid: aid)
+                liked = true
+                coined = true
+                favoured = true
+                toast("一键三连成功 🎉")
+            } catch {
+                toast(errorText(of: error))
+            }
+        }
+    }
+
+    func toggleFollow() {
+        guard requireLoginAid() != nil, let mid = detail?.owner?.mid else { return }
+        Task {
+            do {
+                try await ActionAPI.modifyRelation(mid: mid, follow: !following)
+                following.toggle()
+                toast(following ? "已关注" : "已取消关注")
             } catch {
                 toast(errorText(of: error))
             }
@@ -238,6 +272,16 @@ struct DetailScreen: View {
                 }
                 .buttonStyle(.card)
 
+                Button {
+                    vm.toggleFollow()
+                } label: {
+                    Label(vm.following ? "已关注" : "关注",
+                          systemImage: vm.following ? "checkmark" : "plus")
+                        .font(.caption)
+                        .fixedSize()
+                }
+                .buttonStyle(.bordered)
+
                 Text("\(formatCount(detail.stat?.view)) 播放 · \(formatCount(detail.stat?.danmaku)) 弹幕 · \(formatCount(detail.stat?.like)) 点赞")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -276,6 +320,7 @@ struct DetailScreen: View {
                         vm.favoured ? "已收藏" : "收藏",
                         icon: vm.favoured ? "star.fill" : "star"
                     ) { vm.favorite(mid: auth.mid) }
+                    actionButton("三连", icon: "hands.sparkles") { vm.triple() }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
