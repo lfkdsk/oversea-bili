@@ -93,6 +93,8 @@ final class PlayerViewModel: ObservableObject {
     weak var danmakuOverlay: DanmakuOverlayView?
 
     private var bvid = ""
+    /// PGC 剧集:走 ep_id 官方播放链路
+    private var epId: Int?
     private var detail: ViewData?
     private var candidates: [CDNCandidate] = []
     private var videoSelector: CDNSelector?
@@ -125,8 +127,9 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - 加载
 
-    func load(bvid: String) async {
+    func load(bvid: String, epId: Int? = nil) async {
         self.bvid = bvid
+        self.epId = epId
         danmakuEnabled = CDNSettings.shared.danmakuOn
         do {
             state = .loading("正在解析视频…")
@@ -200,7 +203,13 @@ final class PlayerViewModel: ObservableObject {
         teardownPipeline()
         state = .loading("正在获取播放地址…")
         let cid = activeCid ?? detail.cid
-        let play = try await VideoAPI.playURLDash(bvid: bvid, cid: cid)
+        // PGC 剧集优先走官方 ep_id 链路(大会员/地区授权由该接口判定,错误码更准确)
+        let play: PlayURLData
+        if let epId {
+            play = try await BangumiAPI.playURL(epId: epId, cid: cid)
+        } else {
+            play = try await VideoAPI.playURLDash(bvid: bvid, cid: cid)
+        }
         let labels = play.qualityLabels
         if let dash = play.dash, let video = Self.pickVideo(dash.video ?? [], targetQN: targetQN) {
             try await buildDash(dash: dash, video: video, labels: labels, seekTo: seekTo)
@@ -213,32 +222,45 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - 轨道选择
 
+    /// 可播轨过滤:Apple TV 不支持 AV1 硬解,杜比视界(dvh1)容器要求也不同,均剔除。
+    /// HDR(125)、4K(120)、8K(127)保留 —— tvOS 4K 机型支持 HEVC Main10 HDR。
+    static func isPlayable(_ track: DashTrack) -> Bool {
+        guard track.baseUrl != nil, Sidx.parseRange(track.segmentBase?.indexRange) != nil else { return false }
+        let codec = (track.codecs ?? "").lowercased()
+        return !codec.hasPrefix("av01") && !codec.hasPrefix("dvh") && !codec.hasPrefix("dav1")
+    }
+
     static func pickVideo(_ tracks: [DashTrack], targetQN: Int) -> DashTrack? {
-        let usable = tracks.filter { track in
-            guard track.id <= 120,
-                  track.baseUrl != nil,
-                  Sidx.parseRange(track.segmentBase?.indexRange) != nil else { return false }
-            let codec = (track.codecs ?? "").lowercased()
-            // Apple TV 无 AV1 硬解;杜比视界暂不做
-            return !codec.hasPrefix("av01") && !codec.hasPrefix("dvh")
-        }
+        let usable = tracks.filter(isPlayable)
         let ids = Set(usable.map(\.id))
         guard !ids.isEmpty else { return nil }
         let chosen = ids.filter { $0 <= targetQN }.max() ?? ids.min()!
         let same = usable.filter { $0.id == chosen }
+        // HDR / 8K 只有 HEVC 编码,优先 HEVC
         return same.first {
             let codec = ($0.codecs ?? "").lowercased()
             return codec.hasPrefix("hvc") || codec.hasPrefix("hev")
         } ?? same.first
     }
 
+    /// 音轨:AAC 优先(id 30216/30232/30280);
+    /// 无损 FLAC(30251)在 fMP4-HLS 里不被支持,杜比 EC-3(30250)可用。
     static func pickAudio(_ tracks: [DashTrack]) -> DashTrack? {
-        tracks
-            .filter {
-                (30200...30299).contains($0.id) && $0.baseUrl != nil
-                    && Sidx.parseRange($0.segmentBase?.indexRange) != nil
+        let usable = tracks.filter {
+            $0.baseUrl != nil && Sidx.parseRange($0.segmentBase?.indexRange) != nil
+        }
+        func rank(_ track: DashTrack) -> Int {
+            let codec = (track.codecs ?? "").lowercased()
+            if codec.hasPrefix("mp4a") { return 0 }   // AAC
+            if codec.hasPrefix("ec-3") { return 1 }   // 杜比数字+
+            return 2                                   // FLAC 等,HLS 不支持
+        }
+        return usable
+            .filter { rank($0) < 2 }
+            .max { lhs, rhs in
+                if rank(lhs) != rank(rhs) { return rank(lhs) > rank(rhs) }
+                return (lhs.bandwidth ?? 0) < (rhs.bandwidth ?? 0)
             }
-            .max { ($0.bandwidth ?? 0) < ($1.bandwidth ?? 0) }
     }
 
     // MARK: - DASH → 本地 HLS
@@ -326,15 +348,7 @@ final class PlayerViewModel: ObservableObject {
 
         currentQN = video.id
         qualityName = labels[video.id] ?? QualityLabel.name(video.id)
-        let switchable = Set(
-            (dash.video ?? [])
-                .filter { track in
-                    let codec = (track.codecs ?? "").lowercased()
-                    return track.id <= 120 && !codec.hasPrefix("av01") && !codec.hasPrefix("dvh")
-                        && Sidx.parseRange(track.segmentBase?.indexRange) != nil
-                }
-                .map(\.id)
-        )
+        let switchable = Set((dash.video ?? []).filter(Self.isPlayable).map(\.id))
         availableQualities = switchable.sorted(by: >).map {
             QualityOption(qn: $0, label: labels[$0] ?? QualityLabel.name($0))
         }

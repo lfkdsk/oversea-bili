@@ -35,6 +35,12 @@ enum HLSBuilder {
         if let w = video.width, let h = video.height, w > 0, h > 0 {
             inf += ",RESOLUTION=\(w)x\(h)"
         }
+        // HDR 必须声明 VIDEO-RANGE,否则 tvOS 按 SDR 解码导致颜色发灰
+        if video.id == 125 || video.id == 126 {
+            inf += ",VIDEO-RANGE=PQ"
+        } else {
+            inf += ",VIDEO-RANGE=SDR"
+        }
         if let fr = video.frameRate, let value = Double(fr), value > 0 {
             inf += ",FRAME-RATE=\(String(format: "%.3f", value))"
         }

@@ -54,6 +54,51 @@ enum FeedAPI {
         )
         return (data.result ?? []).filter { $0.bvid != nil }
     }
+
+    /// 番剧/影视搜索。
+    static func searchMedia(keyword: String, movie: Bool = false) async throws -> [SearchMedia] {
+        let data: SearchMediaData = try await BiliClient.shared.get(
+            "https://api.bilibili.com/x/web-interface/wbi/search/type",
+            query: [
+                "search_type": movie ? "media_ft" : "media_bangumi",
+                "keyword": keyword,
+                "page": "1",
+            ],
+            wbi: true
+        )
+        return (data.result ?? []).filter { $0.seasonId != nil }
+    }
+
+    /// UP 主搜索。
+    static func searchUser(keyword: String) async throws -> [SearchUser] {
+        let data: SearchUserData = try await BiliClient.shared.get(
+            "https://api.bilibili.com/x/web-interface/wbi/search/type",
+            query: ["search_type": "bili_user", "keyword": keyword, "page": "1"],
+            wbi: true
+        )
+        return (data.result ?? []).filter { $0.mid != nil }
+    }
+
+    /// 热搜词。
+    static func hotSearch() async -> [String] {
+        guard let data: SearchSquareData = try? await BiliClient.shared.get(
+            "https://api.bilibili.com/x/web-interface/wbi/search/square",
+            query: ["limit": "20", "platform": "web"],
+            wbi: true
+        ) else { return [] }
+        return (data.trending?.list ?? []).compactMap { $0.showName ?? $0.keyword }
+    }
+
+    /// 搜索建议(独立域名,非标准包装)。
+    static func suggestions(for keyword: String) async -> [String] {
+        guard !keyword.isEmpty,
+              let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+              let url = URL(string: "https://s.search.bilibili.com/main/suggest?term=\(encoded)&main_ver=v1&highlight=")
+        else { return [] }
+        guard let (data, _) = try? await BiliClient.shared.session.data(for: BiliClient.shared.makeRequest(url)),
+              let decoded = try? JSONDecoder().decode(SuggestResponse.self, from: data) else { return [] }
+        return (decoded.result?.tag ?? []).compactMap { $0.value ?? $0.name }
+    }
 }
 
 enum VideoAPI {
@@ -407,6 +452,32 @@ enum LiveAPI {
         return data.recommendRoomList ?? []
     }
 
+    /// 直播分区树(父分区 → 子分区)。
+    static func areaList() async throws -> [LiveParentArea] {
+        let data: LiveAreaListData = try await BiliClient.shared.get(
+            "https://api.live.bilibili.com/xlive/web-interface/v1/index/getWebAreaList",
+            query: ["source_id": "2"],
+            referer: "https://live.bilibili.com/"
+        )
+        return (data.data ?? []).filter { $0.id != nil }
+    }
+
+    /// 分区房间列表。
+    static func areaRooms(parentId: Int, areaId: Int, page: Int) async throws -> [LiveRoom] {
+        let data: LiveAreaRoomsData = try await BiliClient.shared.get(
+            "https://api.live.bilibili.com/xlive/web-interface/v1/second/getList",
+            query: [
+                "platform": "web",
+                "parent_area_id": String(parentId),
+                "area_id": String(areaId),
+                "sort_type": "online",
+                "page": String(page),
+            ],
+            referer: "https://live.bilibili.com/"
+        )
+        return (data.list ?? []).filter { $0.roomid != nil }
+    }
+
     /// 取直播 HLS 播放地址(按 fmp4 > ts 优先,avc 编码优先)。
     static func streamURLs(roomId: Int) async throws -> [URL] {
         let data: RoomPlayData = try await BiliClient.shared.get(
@@ -491,6 +562,32 @@ enum BangumiAPI {
             "https://api.bilibili.com/pgc/view/web/season",
             query: ["season_id": String(seasonId)]
         )
+    }
+
+    /// 番剧时间表。types:1 番剧 / 4 国创。
+    static func timeline(types: Int = 1) async throws -> [TimelineDay] {
+        try await BiliClient.shared.getPGC(
+            "https://api.bilibili.com/pgc/web/timeline",
+            query: ["types": String(types), "before": "1", "after": "5"]
+        )
+    }
+
+    /// PGC 正规播放链路(ep_id 维度)。番剧/影视的官方入口,
+    /// 大会员内容与地区授权都由该接口判定,错误码能明确区分原因。
+    static func playURL(epId: Int, cid: Int) async throws -> PlayURLData {
+        let wrapped: PGCPlayURLResult = try await BiliClient.shared.getPGC(
+            "https://api.bilibili.com/pgc/player/web/v2/playurl",
+            query: [
+                "ep_id": String(epId),
+                "cid": String(cid),
+                "qn": "127",
+                "fnval": "4048",
+                "fnver": "0",
+                "fourk": "1",
+            ]
+        )
+        guard let info = wrapped.videoInfo else { throw BiliError.emptyData }
+        return info
     }
 
 }

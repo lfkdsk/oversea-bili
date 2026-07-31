@@ -11,18 +11,29 @@ struct LivePlayRequest: Identifiable {
 final class LiveTabViewModel: ObservableObject {
     @Published var following: [LiveRoom] = []
     @Published var recommend: [LiveRoom] = []
+    @Published var parents: [LiveParentArea] = []
+    /// nil = 推荐;否则为选中的子分区
+    @Published var selectedArea: LiveArea?
+    @Published var areaRooms: [LiveRoom] = []
     @Published var loading = false
     @Published var errorText: String?
 
+    private var areaPage = 1
+    private var areaHasMore = true
     private var loadedOnce = false
 
     func initialLoad(loggedIn: Bool) async {
         guard !loadedOnce else { return }
         loadedOnce = true
+        parents = (try? await LiveAPI.areaList()) ?? []
         await reload(loggedIn: loggedIn)
     }
 
     func reload(loggedIn: Bool) async {
+        if let area = selectedArea {
+            await selectArea(area, reset: true)
+            return
+        }
         loading = true
         errorText = nil
         if loggedIn {
@@ -39,6 +50,39 @@ final class LiveTabViewModel: ObservableObject {
         }
         loading = false
     }
+
+    func selectArea(_ area: LiveArea?, reset: Bool = true) async {
+        selectedArea = area
+        guard let area, area.parentId > 0 else {
+            areaRooms = []
+            return
+        }
+        if reset {
+            areaRooms = []
+            areaPage = 1
+            areaHasMore = true
+        }
+        loading = true
+        errorText = nil
+        do {
+            let rooms = try await LiveAPI.areaRooms(
+                parentId: area.parentId, areaId: area.id, page: areaPage
+            )
+            let known = Set(areaRooms.map(\.id))
+            areaRooms += rooms.filter { !known.contains($0.id) }
+            areaHasMore = !rooms.isEmpty
+            areaPage += 1
+            if areaRooms.isEmpty { errorText = "该分区暂无直播" }
+        } catch {
+            errorText = (error as? BiliError)?.errorDescription ?? error.localizedDescription
+        }
+        loading = false
+    }
+
+    func loadMoreArea(current: LiveRoom) async {
+        guard areaHasMore, !loading, current.id == areaRooms.last?.id, let area = selectedArea else { return }
+        await selectArea(area, reset: false)
+    }
 }
 
 struct LiveTabView: View {
@@ -49,10 +93,12 @@ struct LiveTabView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: TVLayout.rowSpacing) {
-                if vm.loading, vm.following.isEmpty, vm.recommend.isEmpty {
+                areaChips
+
+                if vm.loading, vm.following.isEmpty, vm.recommend.isEmpty, vm.areaRooms.isEmpty {
                     ProgressView()
                         .frame(maxWidth: .infinity)
-                        .padding(.top, 140)
+                        .padding(.top, 100)
                 }
                 if let error = vm.errorText {
                     HintView(icon: "dot.radiowaves.left.and.right", text: error, actionTitle: "重试") {
@@ -60,33 +106,47 @@ struct LiveTabView: View {
                     }
                 }
 
-                if !vm.following.isEmpty {
-                    RailSection(title: "正在直播 · 我的关注") {
-                        ForEach(vm.following) { room in
-                            liveCell(room)
-                                .frame(width: TVLayout.railCardWidth)
-                        }
-                    }
-                }
-
-                if !vm.recommend.isEmpty {
-                    Text("直播推荐")
+                if let area = vm.selectedArea {
+                    Text(area.name ?? "分区")
                         .font(.title3.bold())
                     LazyVGrid(columns: TVLayout.columns4, alignment: .leading, spacing: TVLayout.rowSpacing) {
-                        ForEach(vm.recommend) { room in
+                        ForEach(vm.areaRooms) { room in
                             liveCell(room)
+                                .onAppear {
+                                    Task { await vm.loadMoreArea(current: room) }
+                                }
                         }
                     }
-                }
+                } else {
+                    if !vm.following.isEmpty {
+                        RailSection(title: "正在直播 · 我的关注") {
+                            ForEach(vm.following) { room in
+                                liveCell(room)
+                                    .frame(width: TVLayout.railCardWidth)
+                            }
+                        }
+                    }
 
-                if !auth.isLoggedIn {
-                    Text("登录后可看到关注主播的开播状态")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    if !vm.recommend.isEmpty {
+                        Text("直播推荐")
+                            .font(.title3.bold())
+                        LazyVGrid(columns: TVLayout.columns4, alignment: .leading, spacing: TVLayout.rowSpacing) {
+                            ForEach(vm.recommend) { room in
+                                liveCell(room)
+                            }
+                        }
+                    }
+
+                    if !auth.isLoggedIn {
+                        Text("登录后可看到关注主播的开播状态")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
             .padding(.horizontal, TVLayout.pageHorizontal)
-            .padding(.vertical, TVLayout.pageVertical)
+            .padding(.top, 20)
+            .padding(.bottom, 80)
         }
         .task { await vm.initialLoad(loggedIn: auth.isLoggedIn) }
         .onChange(of: auth.isLoggedIn) { _, loggedIn in
@@ -98,6 +158,40 @@ struct LiveTabView: View {
         .fullScreenCover(item: $playRequest) { request in
             LivePlayerScreen(roomId: request.roomId, title: request.title)
         }
+    }
+
+    /// 分区选择:推荐 + 各父分区下的热门子分区。
+    private var areaChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 18) {
+                chip(title: "推荐", selected: vm.selectedArea == nil) {
+                    Task { await vm.selectArea(nil) }
+                }
+                ForEach(vm.parents) { parent in
+                    ForEach((parent.list ?? []).prefix(6)) { area in
+                        chip(title: area.name ?? "", selected: vm.selectedArea?.id == area.id) {
+                            Task { await vm.selectArea(area) }
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func chip(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if selected {
+                    Circle().fill(.pink).frame(width: 10, height: 10)
+                }
+                Text(title)
+                    .font(.caption.bold())
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .buttonStyle(.bordered)
     }
 
     private func liveCell(_ room: LiveRoom) -> some View {

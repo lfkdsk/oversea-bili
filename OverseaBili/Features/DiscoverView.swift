@@ -8,6 +8,7 @@ final class DiscoverViewModel: ObservableObject {
     @Published var cinema: [BangumiSeason] = []
     @Published var knowledgeRank: [VideoItem] = []
     @Published var movieRank: [VideoItem] = []
+    @Published var timelineToday: [TimelineEpisode] = []
     @Published var loading = false
     @Published var message: String?
     @Published var resolving = false
@@ -26,10 +27,16 @@ final class DiscoverViewModel: ObservableObject {
         async let preciousTask = (try? FeedAPI.precious()) ?? []
         async let knowledgeTask = (try? RankAPI.ranking(rid: 36)) ?? []
         async let movieTask = (try? RankAPI.ranking(rid: 181)) ?? []
+        async let timelineTask = (try? BangumiAPI.timeline(types: 1)) ?? []
         weekly = await weeklyTask
         precious = await preciousTask
         knowledgeRank = await knowledgeTask
         movieRank = await movieTask
+        // 今日更新:优先 is_today,没有则取第一个有剧集的日子
+        let days = await timelineTask
+        timelineToday = days.first(where: { $0.today && !($0.episodes ?? []).isEmpty })?.episodes
+            ?? days.first(where: { !($0.episodes ?? []).isEmpty })?.episodes
+            ?? []
         if let mid {
             async let bangumiTask = (try? BangumiAPI.follow(mid: mid, type: 1)) ?? []
             async let cinemaTask = (try? BangumiAPI.follow(mid: mid, type: 2)) ?? []
@@ -59,6 +66,21 @@ struct DiscoverView: View {
                         ProgressView()
                             .frame(maxWidth: .infinity)
                             .padding(.top, 140)
+                    }
+
+                    if !vm.timelineToday.isEmpty {
+                        RailSection(title: "今日更新") {
+                            ForEach(vm.timelineToday) { episode in
+                                TimelineCell(episode: episode) {
+                                    if let seasonId = episode.seasonId {
+                                        seasonRequest = SeasonRequest(
+                                            seasonId: seasonId,
+                                            title: episode.title ?? "番剧"
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if !vm.bangumi.isEmpty {
@@ -156,6 +178,43 @@ struct DiscoverView: View {
     private func openSeason(_ season: BangumiSeason) {
         guard let seasonId = season.seasonId else { return }
         seasonRequest = SeasonRequest(seasonId: seasonId, title: season.title ?? "选集")
+    }
+}
+
+/// 时间表卡片:横版封面 + 更新话数/时间。
+struct TimelineCell: View {
+    let episode: TimelineEpisode
+    var action: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: action) {
+                ZStack(alignment: .bottomLeading) {
+                    PosterImage(urlString: episode.cover, width: 480, height: 270)
+                    if !episode.isPublished {
+                        Text(episode.pubTime ?? "待更新")
+                            .font(.caption2)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.7), in: Capsule())
+                            .padding(10)
+                    }
+                }
+            }
+            .buttonStyle(.card)
+            .frame(width: TVLayout.railCardWidth, height: TVLayout.railCardWidth * 9 / 16)
+
+            Text(episode.title ?? "")
+                .font(.callout)
+                .lineLimit(2)
+                .frame(width: TVLayout.railCardWidth, height: 68, alignment: .topLeading)
+
+            Text(episode.pubIndex ?? "")
+                .font(.caption2)
+                .foregroundStyle(episode.isPublished ? Color.pink : Color.secondary)
+                .lineLimit(1)
+                .frame(width: TVLayout.railCardWidth, alignment: .leading)
+        }
     }
 }
 

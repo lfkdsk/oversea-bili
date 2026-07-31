@@ -81,6 +81,141 @@ struct RcmdData: Decodable {
     let item: [VideoItem]?
 }
 
+// MARK: - 搜索增强
+
+struct SearchSquareData: Decodable {
+    let trending: Trending?
+
+    struct Trending: Decodable {
+        let list: [Item]?
+        struct Item: Decodable { let keyword: String?; let showName: String? }
+    }
+}
+
+/// s.search.bilibili.com/main/suggest 的响应(不是标准 BiliResponse 包装)。
+struct SuggestResponse: Decodable {
+    let result: Result?
+    struct Result: Decodable {
+        let tag: [Tag]?
+        struct Tag: Decodable { let value: String?; let name: String? }
+    }
+}
+
+/// 搜索里的番剧结果(search_type=media_bangumi)。
+struct SearchMedia: Decodable, Identifiable {
+    let seasonId: Int?
+    let title: String?
+    let cover: String?
+    let seasonTypeName: String?
+    let areas: String?
+    let styles: String?
+
+    var id: Int { seasonId ?? Int.random(in: Int.min...(-1)) }
+    var cleanTitle: String {
+        (title ?? "").replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    }
+    var coverURL: String? {
+        guard let cover, !cover.isEmpty else { return nil }
+        return cover.hasPrefix("//") ? "https:" + cover : cover
+    }
+}
+
+/// 搜索里的 UP 主结果(search_type=bili_user)。
+struct SearchUser: Decodable, Identifiable {
+    let mid: Int?
+    let uname: String?
+    let upic: String?
+    let fans: Int?
+    let videos: Int?
+
+    var id: Int { mid ?? Int.random(in: Int.min...(-1)) }
+    var faceURL: String? {
+        guard let upic, !upic.isEmpty else { return nil }
+        return upic.hasPrefix("//") ? "https:" + upic : upic
+    }
+}
+
+struct SearchMediaData: Decodable {
+    let result: [SearchMedia]?
+}
+
+struct SearchUserData: Decodable {
+    let result: [SearchUser]?
+}
+
+// MARK: - 直播分区
+
+struct LiveAreaListData: Decodable {
+    let data: [LiveParentArea]?
+}
+
+struct LiveParentArea: Decodable, Identifiable {
+    let id: Int
+    let name: String?
+    let list: [LiveArea]?
+}
+
+/// 注意:子分区的 id / parent_id 在 JSON 里是字符串。
+struct LiveArea: Decodable, Identifiable {
+    let id: Int
+    let parentId: Int
+    let name: String?
+    let pic: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, parentId, name, pic
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let value = try? container.decode(Int.self, forKey: .id) {
+            id = value
+        } else {
+            id = Int((try? container.decode(String.self, forKey: .id)) ?? "") ?? -1
+        }
+        if let value = try? container.decode(Int.self, forKey: .parentId) {
+            parentId = value
+        } else {
+            parentId = Int((try? container.decode(String.self, forKey: .parentId)) ?? "") ?? -1
+        }
+        name = try? container.decode(String.self, forKey: .name)
+        pic = try? container.decode(String.self, forKey: .pic)
+    }
+}
+
+struct LiveAreaRoomsData: Decodable {
+    let list: [LiveRoom]?
+    let hasMore: Int?
+}
+
+// MARK: - 番剧时间表
+
+struct TimelineDay: Decodable, Identifiable {
+    let date: String?
+    let dateTs: Int?
+    let dayOfWeek: Int?
+    let isToday: Int?
+    let episodes: [TimelineEpisode]?
+
+    var id: String { date ?? UUID().uuidString }
+    var today: Bool { isToday == 1 }
+}
+
+struct TimelineEpisode: Decodable, Identifiable {
+    let episodeId: Int?
+    let seasonId: Int?
+    let title: String?
+    let pubIndex: String?
+    let pubTime: String?
+    let cover: String?
+    let squareCover: String?
+    let published: Int?
+    let follows: String?
+
+    var id: Int { episodeId ?? Int.random(in: Int.min...(-1)) }
+    var isPublished: Bool { published == 1 }
+}
+
 // MARK: - 搜索
 
 struct SearchTypeData: Decodable {
@@ -617,18 +752,27 @@ struct BangumiSeason: Decodable, Identifiable {
     var id: Int { seasonId ?? Int.random(in: Int.min...(-1)) }
 }
 
+/// pgc/player/web/v2/playurl 的包装(真正数据在 video_info)。
+struct PGCPlayURLResult: Decodable {
+    let videoInfo: PlayURLData?
+}
+
 struct SeasonDetail: Decodable {
     let title: String?
     let episodes: [Episode]?
 
     struct Episode: Decodable, Identifiable {
+        /// ep_id(PGC 播放链路用)
+        let id: Int
         let bvid: String?
         let cid: Int?
         let cover: String?
         let title: String?
         let longTitle: String?
+        let badge: String?
 
-        var id: String { bvid ?? UUID().uuidString }
+        /// 需要大会员
+        var isVip: Bool { (badge ?? "").contains("会员") }
         /// "第 1 话 标题" 形式的展示名
         var displayName: String {
             let index = title.map { "第\($0)话" } ?? ""

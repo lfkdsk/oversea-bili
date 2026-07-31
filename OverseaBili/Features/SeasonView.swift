@@ -6,6 +6,12 @@ struct SeasonRequest: Identifiable {
     var id: Int { seasonId }
 }
 
+struct EpisodeRequest: Identifiable {
+    let bvid: String
+    let epId: Int
+    var id: Int { epId }
+}
+
 @MainActor
 final class SeasonViewModel: ObservableObject {
     @Published var season: SeasonDetail?
@@ -34,7 +40,7 @@ struct SeasonScreen: View {
 
     @StateObject private var vm = SeasonViewModel()
     @Environment(\.dismiss) private var dismiss
-    @State private var playRequest: PlayRequest?
+    @State private var episodeRequest: EpisodeRequest?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: TVLayout.gridSpacing, alignment: .top), count: 4)
 
@@ -65,15 +71,13 @@ struct SeasonScreen: View {
                     } else {
                         LazyVGrid(columns: columns, alignment: .leading, spacing: TVLayout.rowSpacing) {
                             ForEach(vm.season?.episodes ?? []) { episode in
-                                if let bvid = episode.bvid, bvid.hasPrefix("BV") {
-                                    VideoCell(
-                                        title: episode.displayName.isEmpty ? "正片" : episode.displayName,
-                                        pic: episode.cover,
-                                        subtitle: " ",
-                                        duration: ""
-                                    ) {
-                                        playRequest = PlayRequest(bvid: bvid)
-                                    }
+                                VideoCell(
+                                    title: episode.displayName.isEmpty ? "正片" : episode.displayName,
+                                    pic: episode.cover,
+                                    subtitle: episode.isVip ? "大会员" : " ",
+                                    duration: ""
+                                ) {
+                                    episodeRequest = EpisodeRequest(bvid: episode.bvid ?? "", epId: episode.id)
                                 }
                             }
                         }
@@ -86,8 +90,8 @@ struct SeasonScreen: View {
         .task {
             await vm.load(seasonId: seasonId)
         }
-        .fullScreenCover(item: $playRequest) { request in
-            PlayerScreen(bvid: request.bvid)
+        .fullScreenCover(item: $episodeRequest) { request in
+            PlayerScreen(bvid: request.bvid, epId: request.epId)
         }
     }
 }

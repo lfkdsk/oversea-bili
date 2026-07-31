@@ -3,6 +3,8 @@ import SwiftUI
 
 struct PlayerScreen: View {
     let bvid: String
+    /// PGC 剧集传 ep_id,走官方播放链路
+    var epId: Int?
 
     @StateObject private var vm = PlayerViewModel()
     @Environment(\.dismiss) private var dismiss
@@ -97,7 +99,8 @@ struct PlayerScreen: View {
                     playingBvid = next
                 }
             }
-            await vm.load(bvid: playingBvid)
+            // 连播换视频后回到普通 UGC 链路
+            await vm.load(bvid: playingBvid, epId: playingBvid == bvid ? epId : nil)
         }
         .onAppear {
             if playingBvid.isEmpty { playingBvid = bvid }
