@@ -133,7 +133,7 @@ struct DynamicView: View {
 
     private var upRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .top, spacing: 36) {
+            LazyHStack(alignment: .top, spacing: 26) {
                 upButton(nil, name: "全部动态", face: nil, hasUpdate: false)
                 ForEach(vm.ups) { up in
                     upButton(up.mid, name: up.uname ?? "", face: up.face, hasUpdate: up.hasUpdate ?? false)
@@ -156,6 +156,8 @@ struct DynamicView: View {
             )
         }
         .buttonStyle(.plain)
+        // 默认按钮背景是圆角矩形,会在圆形头像外露出方角
+        .clipShape(Circle())
     }
 }
 
@@ -174,50 +176,51 @@ private struct UpAvatarLabel: View {
         return .clear
     }
 
+    private let size: CGFloat = 76
+
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             ZStack(alignment: .topTrailing) {
                 if let face {
                     PosterImage(urlString: face, width: 160, height: 160)
-                        .frame(width: 96, height: 96)
+                        .frame(width: size, height: size)
                         .clipShape(Circle())
                 } else {
                     Circle()
                         .fill(Color.white.opacity(0.12))
-                        .frame(width: 96, height: 96)
+                        .frame(width: size, height: size)
                         .overlay {
                             Image(systemName: "person.2.fill")
-                                .font(.title3)
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
                 }
                 if hasUpdate {
                     Circle()
                         .fill(.pink)
-                        .frame(width: 16, height: 16)
-                        .offset(x: 2, y: -2)
+                        .frame(width: 13, height: 13)
+                        .offset(x: 1, y: -1)
                 }
             }
             .overlay {
                 Circle()
-                    .strokeBorder(ringColor, lineWidth: isFocused ? 6 : (selected ? 5 : 0))
+                    .strokeBorder(ringColor, lineWidth: isFocused ? 4 : (selected ? 3.5 : 0))
             }
-            .shadow(color: isFocused ? .white.opacity(0.45) : .clear, radius: 20)
+            .shadow(color: isFocused ? .white.opacity(0.4) : .clear, radius: 14)
             // 未选中且未聚焦的整体压暗,让"当前选中"一眼可辨
             .saturation(selected || isFocused ? 1.0 : 0.5)
             .opacity(selected || isFocused ? 1.0 : 0.55)
-            .scaleEffect(isFocused ? 1.18 : (selected ? 1.06 : 1.0))
+            .scaleEffect(isFocused ? 1.12 : (selected ? 1.04 : 1.0))
 
             Text(name)
                 .font(isFocused || selected ? .caption2.bold() : .caption2)
                 .foregroundStyle(isFocused ? Color.primary : (selected ? Color.pink : Color.secondary))
                 .opacity(selected || isFocused ? 1.0 : 0.6)
                 .lineLimit(1)
-                .frame(width: 132)
-                .scaleEffect(isFocused ? 1.08 : 1.0)
+                .frame(width: 104)
         }
-        .padding(.horizontal, 4)
-        .padding(.top, 12)
+        .padding(.horizontal, 2)
+        .padding(.top, 8)
         .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isFocused)
         .animation(.easeInOut(duration: 0.18), value: selected)
     }
