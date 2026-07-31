@@ -133,7 +133,7 @@ struct DynamicView: View {
 
     private var upRail: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(alignment: .top, spacing: 26) {
+            LazyHStack(alignment: .top, spacing: 12) {
                 upButton(nil, name: "全部动态", face: nil, hasUpdate: false)
                 ForEach(vm.ups) { up in
                     upButton(up.mid, name: up.uname ?? "", face: up.face, hasUpdate: up.hasUpdate ?? false)
@@ -212,12 +212,14 @@ private struct UpAvatarLabel: View {
             .opacity(selected || isFocused ? 1.0 : 0.55)
             .scaleEffect(isFocused ? 1.12 : (selected ? 1.04 : 1.0))
 
+            // 文字框比头像宽,长名字轻微压缩而不是截断
             Text(name)
                 .font(isFocused || selected ? .caption2.bold() : .caption2)
                 .foregroundStyle(isFocused ? Color.primary : (selected ? Color.pink : Color.secondary))
                 .opacity(selected || isFocused ? 1.0 : 0.6)
                 .lineLimit(1)
-                .frame(width: 104)
+                .minimumScaleFactor(0.75)
+                .frame(width: 150)
         }
         .padding(.horizontal, 2)
         .padding(.top, 8)
