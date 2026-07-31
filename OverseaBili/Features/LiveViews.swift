@@ -220,28 +220,46 @@ final class LivePlayerViewModel: ObservableObject {
 
     @Published var state: LiveState = .loading
     @Published var danmakuEnabled = CDNSettings.shared.danmakuOn
+    @Published var qualities: [LiveQuality] = []
+    @Published var currentQn = 0
 
     let player = AVPlayer()
     weak var danmakuOverlay: DanmakuOverlayView?
     private let danmakuClient = LiveDanmakuClient()
     private var urls: [URL] = []
     private var index = 0
+    private var roomId = 0
     private var statusObservation: NSKeyValueObservation?
 
     func load(roomId: Int, uid: Int) async {
+        self.roomId = roomId
         state = .loading
         danmakuClient.onDanmu = { [weak self] danmu in
             guard let self, self.danmakuEnabled else { return }
             self.danmakuOverlay?.add([danmu])
         }
+        await openStream(qn: CDNSettings.shared.liveQN)
+        await danmakuClient.connect(roomId: roomId, uid: uid)
+    }
+
+    private func openStream(qn: Int) async {
         do {
-            urls = try await LiveAPI.streamURLs(roomId: roomId)
+            let result = try await LiveAPI.streamURLs(roomId: roomId, qn: qn)
+            urls = result.urls
+            if !result.qualities.isEmpty { qualities = result.qualities }
+            currentQn = result.currentQn
             index = 0
             tryNext()
-            await danmakuClient.connect(roomId: roomId, uid: uid)
         } catch {
             state = .failed((error as? BiliError)?.errorDescription ?? error.localizedDescription)
         }
+    }
+
+    func switchQuality(_ qn: Int) {
+        guard qn != currentQn else { return }
+        CDNSettings.shared.liveQN = qn
+        state = .loading
+        Task { await openStream(qn: qn) }
     }
 
     func toggleDanmaku() {
@@ -360,15 +378,31 @@ private struct LivePlayerHost: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
         if vc.player !== vm.player { vc.player = vm.player }
         let model = vm
-        vc.transportBarCustomMenuItems = [
-            UIAction(
-                title: "弹幕",
-                image: UIImage(systemName: model.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble"),
-                state: model.danmakuEnabled ? .on : .off
-            ) { _ in
-                Task { @MainActor in model.toggleDanmaku() }
-            },
-        ]
+        var items: [UIMenuElement] = []
+        if model.qualities.count > 1 {
+            let actions = model.qualities.map { quality in
+                UIAction(
+                    title: quality.desc,
+                    state: quality.qn == model.currentQn ? .on : .off
+                ) { _ in
+                    Task { @MainActor in model.switchQuality(quality.qn) }
+                }
+            }
+            items.append(UIMenu(
+                title: "清晰度",
+                image: UIImage(systemName: "sparkles.tv"),
+                options: .singleSelection,
+                children: actions
+            ))
+        }
+        items.append(UIAction(
+            title: "弹幕",
+            image: UIImage(systemName: model.danmakuEnabled ? "captions.bubble.fill" : "captions.bubble"),
+            state: model.danmakuEnabled ? .on : .off
+        ) { _ in
+            Task { @MainActor in model.toggleDanmaku() }
+        })
+        vc.transportBarCustomMenuItems = items
         context.coordinator.overlay?.enabled = vm.danmakuEnabled
     }
 

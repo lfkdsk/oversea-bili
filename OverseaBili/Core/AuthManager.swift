@@ -16,6 +16,8 @@ final class AuthManager: ObservableObject {
         needsRelogin = LoginExpiry.needsRelogin
         do {
             let nav = try await LoginAPI.nav()
+            // 出口地区变化(换网络/出行)时,CDN 测速缓存自动作废
+            ProbeCache.setRegion(nav.ipRegion)
             isLoggedIn = nav.isLogin
             uname = nav.uname
             face = nav.face

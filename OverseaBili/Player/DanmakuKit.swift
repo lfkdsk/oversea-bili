@@ -278,11 +278,20 @@ final class DanmakuOverlayView: UIView {
 
     func add(_ danmus: [Danmu]) {
         guard enabled, bounds.width > 100 else { return }
-        for danmu in danmus { addOne(danmu) }
+        let style = DanmakuStyle.shared
+        for danmu in danmus {
+            // 智能防挡:屏蔽词过滤 + 同屏条数上限(超限直接丢弃,优先保证画面可见)
+            guard !style.blocked(danmu.text) else { continue }
+            guard scrollItems.count + staticItems.count < style.maxOnScreen else { continue }
+            addOne(danmu)
+        }
     }
 
     private func addOne(_ danmu: Danmu) {
-        let lanes = max(4, min(13, Int(bounds.height * 0.82 / rowHeight)))
+        let style = DanmakuStyle.shared
+        // 弹幕只占屏幕上方 area 比例的高度
+        let usableHeight = bounds.height * CGFloat(style.area)
+        let lanes = max(2, min(14, Int(usableHeight / (rowHeight * CGFloat(style.scale)))))
         if laneLast.count != lanes {
             laneLast = Array(repeating: nil, count: lanes)
         }
@@ -293,9 +302,10 @@ final class DanmakuOverlayView: UIView {
             guard let lane = (0..<staticLaneCount).first(where: { lane in
                 !staticItems.contains { $0.top == top && $0.lane == lane }
             }) else { return }
+            let laneHeight = rowHeight * CGFloat(style.scale)
             let y = top
-                ? CGFloat(lane) * rowHeight + 16
-                : bounds.height - CGFloat(lane + 1) * rowHeight - 90
+                ? CGFloat(lane) * laneHeight + 16
+                : bounds.height - CGFloat(lane + 1) * laneHeight - 90
             label.frame.origin = CGPoint(x: (bounds.width - label.bounds.width) / 2, y: y)
             addSubview(label)
             staticItems.append(StaticItem(label: label, lane: lane, top: top, remaining: 4.5))
@@ -304,20 +314,25 @@ final class DanmakuOverlayView: UIView {
                 guard let last = laneLast[lane], last.superview != nil else { return true }
                 return last.frame.maxX < bounds.width - 60
             }) else { return }
-            label.frame.origin = CGPoint(x: bounds.width, y: CGFloat(lane) * rowHeight + 16)
+            label.frame.origin = CGPoint(
+                x: bounds.width,
+                y: CGFloat(lane) * rowHeight * CGFloat(style.scale) + 16
+            )
             addSubview(label)
             laneLast[lane] = label
-            let speed = (bounds.width + label.bounds.width) / 9.0
+            let speed = (bounds.width + label.bounds.width) / CGFloat(max(3, style.duration))
             scrollItems.append(ScrollItem(label: label, speed: speed))
         }
     }
 
     private func makeLabel(_ danmu: Danmu) -> UILabel {
+        let style = DanmakuStyle.shared
         let label = UILabel()
-        label.font = .systemFont(ofSize: danmu.fontsize <= 18 ? 26 : 32, weight: .medium)
+        let base: CGFloat = danmu.fontsize <= 18 ? 26 : 32
+        label.font = .systemFont(ofSize: base * CGFloat(style.scale), weight: .medium)
         label.text = danmu.text
         label.textColor = UIColor(danmakuRGB: danmu.color)
-        label.alpha = 0.85
+        label.alpha = CGFloat(style.opacity)
         label.layer.shadowColor = UIColor.black.cgColor
         label.layer.shadowOffset = CGSize(width: 1, height: 1)
         label.layer.shadowOpacity = 0.9

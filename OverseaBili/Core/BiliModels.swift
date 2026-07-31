@@ -38,6 +38,8 @@ struct NavData: Decodable {
     let face: String?
     let mid: Int?
     let wbiImg: WbiImg?
+    /// 请求出口地区(用于 CDN 测速缓存分区)
+    let ipRegion: String?
 }
 
 struct SpiData: Decodable {
@@ -703,11 +705,25 @@ struct DanmuInfoData: Decodable {
     }
 }
 
+struct LiveQuality: Identifiable, Hashable {
+    let qn: Int
+    let desc: String
+    var id: Int { qn }
+}
+
 struct RoomPlayData: Decodable {
     let playurlInfo: PlayurlInfo?
 
     struct PlayurlInfo: Decodable { let playurl: Playurl? }
-    struct Playurl: Decodable { let stream: [Stream]? }
+    struct Playurl: Decodable {
+        let stream: [Stream]?
+        /// 全部可用清晰度(杜比/4K/2K/原画/蓝光/超清/高清/流畅)
+        let gQnDesc: [QnDesc]?
+    }
+    struct QnDesc: Decodable {
+        let qn: Int?
+        let desc: String?
+    }
     struct Stream: Decodable {
         let protocolName: String?
         let format: [Format]?

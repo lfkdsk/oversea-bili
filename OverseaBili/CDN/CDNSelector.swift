@@ -10,7 +10,10 @@ struct HostState {
     var cooldownUntil: Date?
     var lastError: String?
     var deliveredBytes: Int64 = 0
+    var successCount = 0
     var probeValidated = false
+    /// 速度来自本地历史缓存而非本次实测
+    var fromCache = false
 
     func isCooling(now: Date = Date()) -> Bool {
         if let until = cooldownUntil { return until > now }
@@ -43,6 +46,15 @@ final class CDNSelector {
             var state = HostState()
             // API 直接下发的线路视为已验证;换 host 生成的额外镜像需探测通过
             state.probeValidated = !c.isExtra
+            // 用持久化的历史成绩做初始排序,省掉冷启动探测
+            if let cached = ProbeCache.mbps(for: c.host) {
+                state.probeMbps = cached
+                state.fromCache = true
+            } else if c.isExtra, ProbeCache.isRejected(c.host) {
+                // 上次探测就被拒,本轮不必再浪费一次探测
+                state.probeValidated = false
+                state.lastError = "上次探测被拒绝"
+            }
             states[c.host] = state
         }
     }
@@ -117,7 +129,13 @@ final class CDNSelector {
         s.lastError = nil
         s.deliveredBytes += Int64(bytes)
         s.probeValidated = true
+        s.fromCache = false
+        s.successCount += 1
         states[host] = s
+        // 真实下载成绩写回缓存(比探测样本更可信)
+        if bytes > 256 * 1024 {
+            ProbeCache.record(host: host, mbps: s.ewmaMbps ?? mbps)
+        }
     }
 
     func recordFailure(host: String, error: String) {
@@ -134,10 +152,12 @@ final class CDNSelector {
     /// 应用一轮完整测速结果。
     func apply(probeResults: [ProbeResult]) {
         lock.lock(); defer { lock.unlock() }
+        ProbeCache.apply(results: probeResults)
         for result in probeResults {
             var s = states[result.candidate.host] ?? HostState()
             s.probeScore = result.score
             s.probeMbps = result.minMbps
+            s.fromCache = false
             if result.ok {
                 s.probeValidated = true
                 // 测速成功说明线路恢复,清掉旧冷却

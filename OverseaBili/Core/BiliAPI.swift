@@ -478,8 +478,8 @@ enum LiveAPI {
         return (data.list ?? []).filter { $0.roomid != nil }
     }
 
-    /// 取直播 HLS 播放地址(按 fmp4 > ts 优先,avc 编码优先)。
-    static func streamURLs(roomId: Int) async throws -> [URL] {
+    /// 取直播 HLS 播放地址(按 fmp4 > ts 优先,avc 编码优先)+ 可用清晰度列表。
+    static func streamURLs(roomId: Int, qn: Int = 10000) async throws -> (urls: [URL], qualities: [LiveQuality], currentQn: Int) {
         let data: RoomPlayData = try await BiliClient.shared.get(
             "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
             query: [
@@ -487,11 +487,15 @@ enum LiveAPI {
                 "protocol": "0,1",
                 "format": "0,1,2",
                 "codec": "0,1",
-                "qn": "10000",
+                "qn": String(qn),
                 "platform": "web",
                 "ptype": "8",
             ]
         )
+        let qualities = (data.playurlInfo?.playurl?.gQnDesc ?? []).compactMap { item -> LiveQuality? in
+            guard let qn = item.qn, let desc = item.desc else { return nil }
+            return LiveQuality(qn: qn, desc: desc)
+        }
         let streams = data.playurlInfo?.playurl?.stream ?? []
         let hls = streams.filter { $0.protocolName == "http_hls" }
         let formats = hls.flatMap { $0.format ?? [] }
@@ -506,10 +510,12 @@ enum LiveAPI {
             return rank(a.formatName) < rank(b.formatName)
         }
         var urls: [URL] = []
+        var actualQn = qn
         for format in ordered {
             let codecs = (format.codec ?? []).sorted { a, _ in a.codecName == "avc" }
             for codec in codecs {
                 guard let base = codec.baseUrl else { continue }
+                if let current = codec.currentQn { actualQn = current }
                 for info in codec.urlInfo ?? [] {
                     guard let host = info.host else { continue }
                     if let url = URL(string: host + base + (info.extra ?? "")) {
@@ -519,7 +525,7 @@ enum LiveAPI {
             }
         }
         guard !urls.isEmpty else { throw BiliError.notPlayable("直播间未开播或没有可用流") }
-        return urls
+        return (urls, qualities, actualQn)
     }
 }
 

@@ -8,6 +8,20 @@ struct EngineStats {
     var deliveredBytes: Int64 = 0
     var failovers: Int = 0
     var inflightCount: Int = 0
+    // 质量统计
+    var downloadedBytes: Int64 = 0
+    var elapsedSeconds: Double = 0
+    var chunkCount: Int = 0
+    var chunkRetries: Int = 0
+    var chunkFailures: Int = 0
+    var peakMbps: Double = 0
+    var switchLog: [String] = []
+
+    /// 整场平均下载吞吐
+    var averageMbps: Double {
+        guard elapsedSeconds > 0.5 else { return 0 }
+        return Double(downloadedBytes) * 8 / elapsedSeconds / 1_000_000
+    }
 }
 
 func withTimeout<T>(seconds: Double, _ op: @escaping () async throws -> T) async throws -> T {
@@ -44,6 +58,17 @@ final class ChunkEngine {
     private var deliveredTotal: Int64 = 0
     private var stopped = false
     private var lastStatsPush = Date.distantPast
+    // 质量统计
+    private let startedAt = Date()
+    private var downloadedTotal: Int64 = 0
+    private var chunkCount = 0
+    private var chunkRetries = 0
+    private var chunkFailures = 0
+    private var peakMbps: Double = 0
+    private var switchLog: [String] = []
+    private var lastLoggedHost: String?
+    /// 播放器上报的卡顿次数
+    var stallCount = 0
 
     private let prefetchAheadChunks: Int64 = 12  // 24MB 预取窗口
     private let maxConcurrentFetch = 2
@@ -174,6 +199,13 @@ final class ChunkEngine {
                     guard data.count >= expected else { throw URLError(.badServerResponse) }
                     let elapsed = Date().timeIntervalSince(began)
                     self.selector.recordSuccess(host: candidate.host, bytes: data.count, seconds: elapsed)
+                    self.noteChunkDone(
+                        host: candidate.host,
+                        label: candidate.label,
+                        bytes: data.count,
+                        seconds: elapsed,
+                        retries: attemptInRound - 1
+                    )
                     if attemptInRound > 1 || round > 1 {
                         self.noteFailover()
                     }
@@ -225,6 +257,7 @@ final class ChunkEngine {
 
     private func finishChunkFailed(_ idx: Int64) {
         loaderQueue.async {
+            self.chunkFailures += 1
             self.inflight.remove(idx)
             self.fetchTasks[idx] = nil
             if let list = self.waiters.removeValue(forKey: idx) {
@@ -239,6 +272,32 @@ final class ChunkEngine {
             self.failoverCount += 1
             let count = self.failoverCount
             DispatchQueue.main.async { self.onFailover?(count) }
+        }
+    }
+
+    /// 每个分块下载完成后的质量埋点。
+    private func noteChunkDone(host: String, label: String, bytes: Int, seconds: Double, retries: Int) {
+        loaderQueue.async {
+            self.downloadedTotal += Int64(bytes)
+            self.chunkCount += 1
+            self.chunkRetries += max(0, retries)
+            let mbps = Double(bytes) * 8 / max(seconds, 0.001) / 1_000_000
+            self.peakMbps = max(self.peakMbps, mbps)
+            // 线路发生变化时记一行,构成切换轨迹
+            if self.lastLoggedHost != host {
+                let stamp = Int(Date().timeIntervalSince(self.startedAt))
+                self.switchLog.append(String(format: "%02d:%02d  %@  %.1f Mbps",
+                                             stamp / 60, stamp % 60, label, mbps))
+                if self.switchLog.count > 30 { self.switchLog.removeFirst() }
+                self.lastLoggedHost = host
+            }
+        }
+    }
+
+    func noteStall() {
+        loaderQueue.async {
+            self.stallCount += 1
+            self.publishStats(force: true)
         }
     }
 
@@ -267,6 +326,13 @@ final class ChunkEngine {
         stats.deliveredBytes = deliveredTotal
         stats.failovers = failoverCount
         stats.inflightCount = inflight.count
+        stats.downloadedBytes = downloadedTotal
+        stats.elapsedSeconds = Date().timeIntervalSince(startedAt)
+        stats.chunkCount = chunkCount
+        stats.chunkRetries = chunkRetries
+        stats.chunkFailures = chunkFailures
+        stats.peakMbps = peakMbps
+        stats.switchLog = switchLog
         var idx = frontierOffset / Self.chunkSize
         var ahead: Int64 = 0
         while let chunk = cache[idx] {

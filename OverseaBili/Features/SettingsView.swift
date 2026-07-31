@@ -40,10 +40,72 @@ struct SettingsView: View {
                     Text("720P").tag(64)
                 }
                 Toggle("默认开启弹幕", isOn: $settings.danmakuOn)
+                Picker("直播清晰度", selection: $settings.liveQN) {
+                    Text("原画").tag(10000)
+                    Text("蓝光").tag(400)
+                    Text("超清").tag(250)
+                    Text("高清").tag(150)
+                    Text("流畅").tag(80)
+                }
             } header: {
                 Text("播放偏好")
             } footer: {
                 Text("4K / 1080P60 需要登录(部分内容需大会员);实际以视频可用清晰度为准。播放中也可在转场条菜单里临时切换。")
+            }
+
+            Section {
+                Picker("显示区域", selection: $settings.danmakuArea) {
+                    Text("四分之一屏").tag(0.25)
+                    Text("半屏").tag(0.5)
+                    Text("四分之三屏").tag(0.75)
+                    Text("全屏").tag(1.0)
+                }
+                Picker("不透明度", selection: $settings.danmakuOpacity) {
+                    Text("40%").tag(0.4)
+                    Text("60%").tag(0.6)
+                    Text("85%").tag(0.85)
+                    Text("100%").tag(1.0)
+                }
+                Picker("字号", selection: $settings.danmakuScale) {
+                    Text("小").tag(0.8)
+                    Text("标准").tag(1.0)
+                    Text("大").tag(1.25)
+                }
+                Picker("滚动速度", selection: $settings.danmakuDuration) {
+                    Text("快").tag(6.0)
+                    Text("标准").tag(9.0)
+                    Text("慢").tag(13.0)
+                }
+                Picker("同屏上限", selection: $settings.danmakuMaxOnScreen) {
+                    Text("20 条(清爽)").tag(20)
+                    Text("40 条(标准)").tag(40)
+                    Text("80 条(密集)").tag(80)
+                    Text("150 条(全量)").tag(150)
+                }
+            } header: {
+                Text("弹幕防挡")
+            } footer: {
+                Text("显示区域限制弹幕只占屏幕上方区域,同屏上限超出后新弹幕直接丢弃 —— 两者组合可避免关键画面被糊住。")
+            }
+
+            Section {
+                LabeledContent("当前出口地区", value: ProbeCache.region)
+                ForEach(ProbeCache.snapshot().prefix(6), id: \.host) { item in
+                    LabeledContent(item.host) {
+                        Text(item.rejected
+                             ? "签名被拒"
+                             : String(format: "%.1f Mbps · %d 分钟前", item.mbps, item.ageMinutes))
+                            .font(.caption)
+                            .foregroundStyle(item.rejected ? .red : .secondary)
+                    }
+                }
+                Button("清除测速缓存", role: .destructive) {
+                    ProbeCache.clear()
+                }
+            } header: {
+                Text("线路测速缓存")
+            } footer: {
+                Text("按出口地区缓存各线路实测速度(6 小时有效),下次起播直接按历史成绩排序,省掉冷启动探测;换网络导致出口地区变化时自动作废。")
             }
 
             Section {

@@ -154,10 +154,13 @@ struct PlayerHost: UIViewControllerRepresentable {
         let cdnPanel = UIHostingController(rootView: CDNPanelView(vm: vm))
         cdnPanel.title = "线路"
         cdnPanel.preferredContentSize = CGSize(width: 1700, height: 460)
+        let statsPanel = UIHostingController(rootView: StatsPanelView(vm: vm))
+        statsPanel.title = "质量"
+        statsPanel.preferredContentSize = CGSize(width: 1700, height: 460)
         let heatPanel = UIHostingController(rootView: HeatPanelView(vm: vm))
         heatPanel.title = "高能"
         heatPanel.preferredContentSize = CGSize(width: 1700, height: 420)
-        vc.customInfoViewControllers = [cdnPanel, heatPanel]
+        vc.customInfoViewControllers = [cdnPanel, statsPanel, heatPanel]
         return vc
     }
 
@@ -328,6 +331,73 @@ struct CDNPanelView: View {
                 .padding(20)
             }
             .buttonStyle(.bordered)
+        }
+    }
+}
+
+/// 播放质量统计:吞吐、卡顿、分块重试、线路切换轨迹。
+struct StatsPanelView: View {
+    @ObservedObject var vm: PlayerViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("本次播放质量")
+                .font(.headline)
+
+            HStack(spacing: 46) {
+                metric("平均吞吐", String(format: "%.1f", vm.stats.averageMbps), unit: "Mbps")
+                metric("峰值", String(format: "%.1f", vm.stats.peakMbps), unit: "Mbps")
+                metric("已下载", formatBytes(vm.stats.downloadedBytes), unit: "")
+                metric("卡顿", "\(vm.stallCount)", unit: "次",
+                       tint: vm.stallCount > 0 ? .orange : .green)
+                metric("线路切换", "\(vm.stats.failovers)", unit: "次")
+                metric("分块", "\(vm.stats.chunkCount)", unit: "块")
+                metric("重试/失败", "\(vm.stats.chunkRetries)/\(vm.stats.chunkFailures)", unit: "",
+                       tint: vm.stats.chunkFailures > 0 ? .red : .secondary)
+            }
+
+            Divider()
+
+            Text("线路切换轨迹")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if vm.stats.switchLog.isEmpty {
+                Text("尚未发生切换 —— 当前线路全程稳定")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 18) {
+                        ForEach(Array(vm.stats.switchLog.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.caption.monospacedDigit())
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(.white.opacity(0.08), in: Capsule())
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .padding(32)
+    }
+
+    private func metric(_ title: String, _ value: String, unit: String, tint: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value)
+                    .font(.title3.bold().monospacedDigit())
+                    .foregroundStyle(tint)
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }

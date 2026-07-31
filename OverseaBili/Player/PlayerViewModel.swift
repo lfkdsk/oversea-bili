@@ -21,12 +21,97 @@ final class CDNSettings: ObservableObject {
     @Published var danmakuOn: Bool {
         didSet { UserDefaults.standard.set(danmakuOn, forKey: "play.danmakuOn") }
     }
+    /// 直播清晰度(10000 = 原画)
+    @Published var liveQN: Int {
+        didSet { UserDefaults.standard.set(liveQN, forKey: "play.liveQN") }
+    }
+    /// 弹幕占屏比例:0.25 / 0.5 / 0.75 / 1.0
+    @Published var danmakuArea: Double {
+        didSet {
+            UserDefaults.standard.set(danmakuArea, forKey: "danmaku.area")
+            DanmakuStyle.shared.area = danmakuArea
+        }
+    }
+    @Published var danmakuOpacity: Double {
+        didSet {
+            UserDefaults.standard.set(danmakuOpacity, forKey: "danmaku.opacity")
+            DanmakuStyle.shared.opacity = danmakuOpacity
+        }
+    }
+    /// 字号倍率
+    @Published var danmakuScale: Double {
+        didSet {
+            UserDefaults.standard.set(danmakuScale, forKey: "danmaku.scale")
+            DanmakuStyle.shared.scale = danmakuScale
+        }
+    }
+    /// 滚动时长(秒),越大越慢
+    @Published var danmakuDuration: Double {
+        didSet {
+            UserDefaults.standard.set(danmakuDuration, forKey: "danmaku.duration")
+            DanmakuStyle.shared.duration = danmakuDuration
+        }
+    }
+    /// 智能防挡:同一时刻最多上屏条数(限流,避免糊屏)
+    @Published var danmakuMaxOnScreen: Int {
+        didSet {
+            UserDefaults.standard.set(danmakuMaxOnScreen, forKey: "danmaku.maxOnScreen")
+            DanmakuStyle.shared.maxOnScreen = danmakuMaxOnScreen
+        }
+    }
+    /// 屏蔽词,分号分隔
+    @Published var danmakuBlockWords: String {
+        didSet {
+            UserDefaults.standard.set(danmakuBlockWords, forKey: "danmaku.blockWords")
+            DanmakuStyle.shared.blockWords = Self.parseWords(danmakuBlockWords)
+        }
+    }
+
+    static func parseWords(_ text: String) -> [String] {
+        text.split(whereSeparator: { ";；, ，".contains($0) })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     private init() {
         extraMirrors = UserDefaults.standard.object(forKey: "cdn.extraMirrors") as? Bool ?? true
         manualPin = UserDefaults.standard.string(forKey: "cdn.manualPin") ?? ""
         preferredQN = UserDefaults.standard.object(forKey: "play.preferredQN") as? Int ?? 0
         danmakuOn = UserDefaults.standard.object(forKey: "play.danmakuOn") as? Bool ?? true
+        liveQN = UserDefaults.standard.object(forKey: "play.liveQN") as? Int ?? 10000
+        danmakuArea = UserDefaults.standard.object(forKey: "danmaku.area") as? Double ?? 0.5
+        danmakuOpacity = UserDefaults.standard.object(forKey: "danmaku.opacity") as? Double ?? 0.85
+        danmakuScale = UserDefaults.standard.object(forKey: "danmaku.scale") as? Double ?? 1.0
+        danmakuDuration = UserDefaults.standard.object(forKey: "danmaku.duration") as? Double ?? 9.0
+        danmakuMaxOnScreen = UserDefaults.standard.object(forKey: "danmaku.maxOnScreen") as? Int ?? 40
+        danmakuBlockWords = UserDefaults.standard.string(forKey: "danmaku.blockWords") ?? ""
+
+        let style = DanmakuStyle.shared
+        style.area = danmakuArea
+        style.opacity = danmakuOpacity
+        style.scale = danmakuScale
+        style.duration = danmakuDuration
+        style.maxOnScreen = danmakuMaxOnScreen
+        style.blockWords = Self.parseWords(danmakuBlockWords)
+    }
+}
+
+/// 弹幕渲染参数(UIKit 层直接读,避免每帧穿透 SwiftUI)。
+final class DanmakuStyle {
+    static let shared = DanmakuStyle()
+    var area: Double = 0.5
+    var opacity: Double = 0.85
+    var scale: Double = 1.0
+    var duration: Double = 9.0
+    var maxOnScreen: Int = 40
+    var blockWords: [String] = []
+
+    private init() {}
+
+    func blocked(_ text: String) -> Bool {
+        guard !blockWords.isEmpty else { return false }
+        let lower = text.lowercased()
+        return blockWords.contains { lower.contains($0.lowercased()) }
     }
 }
 
@@ -86,6 +171,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentPageIndex = 0
     /// 播完接下一个(多 P 下一集,否则相关推荐第一个)
     @Published var upNext: (bvid: String, title: String)?
+    /// 本次播放卡顿次数
+    @Published var stallCount = 0
     var onPlayNext: ((String) -> Void)?
 
     let player = AVPlayer()
@@ -639,6 +726,9 @@ final class PlayerViewModel: ObservableObject {
         if let current = videoSelector?.currentHost {
             videoSelector?.recordFailure(host: current, error: "播放停滞")
         }
+        stallCount += 1
+        videoEngine?.noteStall()
+        mp4Engine?.noteStall()
         scheduleRecoveryProbe()
     }
 
