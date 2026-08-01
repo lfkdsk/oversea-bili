@@ -110,10 +110,19 @@ struct SettingsView: View {
 
             Section {
                 Toggle("附加海外镜像候选", isOn: $settings.extraMirrors)
-                Picker("固定线路", selection: $settings.manualPin) {
-                    Text("自动优选(推荐)").tag("")
-                    ForEach(CandidateBuilder.defaultExtraMirrors, id: \.self) { host in
-                        Text(host).tag(host)
+                if settings.manualPin.isEmpty {
+                    LabeledContent("选路模式") {
+                        Label("自动优选", systemImage: "wand.and.stars")
+                            .foregroundStyle(.green)
+                    }
+                } else {
+                    LabeledContent("选路模式") {
+                        Text(settings.manualPin)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    Button("恢复自动优选") {
+                        settings.manualPin = ""
                     }
                 }
             } header: {

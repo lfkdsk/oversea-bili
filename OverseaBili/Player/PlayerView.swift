@@ -235,8 +235,23 @@ struct CDNPanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 20) {
-                Text("智能选路")
-                    .font(.headline)
+                // 明确当前处于自动还是手动固定 —— 固定后不再自动切换,必须让用户看得见
+                if let pinned = vm.stats.hosts.first(where: { $0.isPinned }) {
+                    Label("已固定 \(pinned.candidate.label)", systemImage: "pin.fill")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    Button {
+                        vm.pinHost(nil)
+                    } label: {
+                        Label("恢复自动优选", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Label("自动优选中", systemImage: "wand.and.stars")
+                        .font(.headline)
+                        .foregroundStyle(.green)
+                }
                 Text("画质 \(vm.qualityName) · 前方缓存 \(formatBytes(vm.stats.cacheAheadBytes)) · 已切换 \(vm.stats.failovers) 次")
                     .font(.caption)
                     .foregroundStyle(.secondary)
