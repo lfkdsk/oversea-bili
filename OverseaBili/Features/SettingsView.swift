@@ -4,6 +4,8 @@ struct SettingsView: View {
     @EnvironmentObject private var auth: AuthManager
     @ObservedObject private var settings = CDNSettings.shared
     @State private var showLogin = false
+    @State private var showRoamLogin = false
+    @State private var roamAuthorized = RoamAPI.isAuthorized
 
     var body: some View {
         Form {
@@ -39,6 +41,14 @@ struct SettingsView: View {
                     Text("1080P").tag(80)
                     Text("720P").tag(64)
                 }
+                Picker("视频编码", selection: $settings.codec) {
+                    Text("自动(优先 HEVC)").tag("auto")
+                    Text("HEVC").tag("hevc")
+                    Text("AVC(兼容优先)").tag("avc")
+                }
+                Toggle("HDR", isOn: $settings.hdr)
+                Toggle("杜比音效(E-AC-3)", isOn: $settings.dolbyAudio)
+                Toggle("自动连播", isOn: $settings.autoNext)
                 Toggle("默认开启弹幕", isOn: $settings.danmakuOn)
                 Picker("直播清晰度", selection: $settings.liveQN) {
                     Text("原画").tag(10000)
@@ -82,10 +92,41 @@ struct SettingsView: View {
                     Text("80 条(密集)").tag(80)
                     Text("150 条(全量)").tag(150)
                 }
+                Picker("云屏蔽等级", selection: $settings.danmakuLevel) {
+                    Text("不屏蔽").tag(0)
+                    Text("3 级(轻度)").tag(3)
+                    Text("5 级(中度)").tag(5)
+                    Text("8 级(严格)").tag(8)
+                }
+                TextField("屏蔽词(逗号或空格分隔)", text: $settings.danmakuBlockWords)
             } header: {
                 Text("弹幕防挡")
             } footer: {
                 Text("显示区域限制弹幕只占屏幕上方区域,同屏上限超出后新弹幕直接丢弃 —— 两者组合可避免关键画面被糊住。")
+            }
+
+            Section {
+                Toggle("地区受限时走解析服务器", isOn: $settings.roamOn)
+                Picker("解析地区", selection: $settings.roamArea) {
+                    Text("自动(大陆→港澳→台湾)").tag("auto")
+                    Text("大陆").tag("cn")
+                    Text("港澳").tag("hk")
+                    Text("台湾").tag("tw")
+                }
+                if roamAuthorized {
+                    LabeledContent("授权", value: "已授权(UID \(RoamAPI.auth?.mid.map(String.init) ?? "-"))")
+                    Button("清除授权", role: .destructive) {
+                        RoamAPI.auth = nil
+                        roamAuthorized = false
+                    }
+                } else {
+                    Button("扫码授权") { showRoamLogin = true }
+                }
+                TextField("解析服务器", text: $settings.roamServer)
+            } header: {
+                Text("番剧解析")
+            } footer: {
+                Text("B 站按请求 IP 判定番剧版权地区。官方接口提示地区限制时,改经解析服务器取播放地址,番剧 / 影视搜索也会合并它的结果。解析服务器只会收到 access_key(需单独扫码一次),不会收到网页登录 Cookie;大会员内容仍按你自己的账号判定。")
             }
 
             Section {
@@ -133,7 +174,7 @@ struct SettingsView: View {
 
             Section("关于") {
                 LabeledContent("应用", value: "海外哔哩 for Apple TV")
-                LabeledContent("播放接口", value: "bilibili html5 mp4 (最高 1080P)")
+                LabeledContent("播放管线", value: "DASH → 本地 HLS(最高 8K / HDR)")
                 LabeledContent("CDN 调度算法", value: "移植自 bili-pilot")
                 Text("仅供个人学习使用。视频内容与账号数据均来自 bilibili 官方接口。")
                     .font(.caption)
@@ -142,6 +183,9 @@ struct SettingsView: View {
         }
         .fullScreenCover(isPresented: $showLogin) {
             LoginView()
+        }
+        .fullScreenCover(isPresented: $showRoamLogin) {
+            LoginView(roam: true) { roamAuthorized = RoamAPI.isAuthorized }
         }
     }
 }

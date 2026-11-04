@@ -17,6 +17,7 @@ final class SearchViewModel: ObservableObject {
     @Published var users: [SearchUser] = []
     @Published var hotWords: [String] = []
     @Published var suggestions: [String] = []
+    @Published var history: [String] = UserDefaults.standard.stringArray(forKey: "search.history") ?? []
     @Published var searching = false
     @Published var errorText: String?
     /// 已提交的关键词(用于切换分类时复用)
@@ -25,6 +26,9 @@ final class SearchViewModel: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var suggestTask: Task<Void, Never>?
     private var loadedHot = false
+    private var page = 1
+    private var hasMore = false
+    private var loadingMore = false
 
     func loadHot() async {
         guard !loadedHot else { return }
@@ -54,7 +58,59 @@ final class SearchViewModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         activeKeyword = trimmed
         suggestions = []
+        history = [trimmed] + history.filter { $0 != trimmed }.prefix(19)
+        UserDefaults.standard.set(history, forKey: "search.history")
         run()
+    }
+
+    /// 回到搜索首页(热搜 / 历史)。
+    func clearResults() {
+        searchTask?.cancel()
+        activeKeyword = ""
+        videos = []
+        medias = []
+        users = []
+        errorText = nil
+        searching = false
+        hasMore = false
+    }
+
+    /// 滚到结果末尾时翻页。
+    func loadMoreIfNeeded(isLast: Bool) {
+        guard isLast, hasMore, !loadingMore, !searching else { return }
+        loadingMore = true
+        let keyword = activeKeyword
+        let scope = scope
+        let next = page + 1
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.loadingMore = false }
+            do {
+                switch scope {
+                case .video:
+                    let result = try await FeedAPI.search(keyword: keyword, page: next)
+                    guard keyword == self.activeKeyword, scope == self.scope else { return }
+                    let known = Set(self.videos.map(\.id))
+                    self.videos += result.items.filter { !known.contains($0.id) }
+                    self.hasMore = result.more
+                case .bangumi, .movie:
+                    let result = try await FeedAPI.searchMedia(keyword: keyword, movie: scope == .movie, page: next)
+                    guard keyword == self.activeKeyword, scope == self.scope else { return }
+                    let known = Set(self.medias.compactMap(\.seasonId))
+                    self.medias += result.items.filter { !known.contains($0.seasonId ?? 0) }
+                    self.hasMore = result.more
+                case .user:
+                    let result = try await FeedAPI.searchUser(keyword: keyword, page: next)
+                    guard keyword == self.activeKeyword, scope == self.scope else { return }
+                    let known = Set(self.users.compactMap(\.mid))
+                    self.users += result.items.filter { !known.contains($0.mid ?? 0) }
+                    self.hasMore = result.more
+                }
+                self.page = next
+            } catch {
+                self.hasMore = false
+            }
+        }
     }
 
     func changeScope(_ next: SearchScope) {
@@ -72,19 +128,27 @@ final class SearchViewModel: ObservableObject {
             guard let self else { return }
             self.searching = true
             self.errorText = nil
+            self.page = 1
+            self.hasMore = false
             do {
                 switch scope {
                 case .video:
-                    videos = try await FeedAPI.search(keyword: keyword)
+                    let result = try await FeedAPI.search(keyword: keyword)
+                    guard !Task.isCancelled else { return }
+                    videos = result.items
+                    hasMore = result.more
                     if videos.isEmpty { errorText = "没有找到相关视频" }
-                case .bangumi:
-                    medias = try await FeedAPI.searchMedia(keyword: keyword, movie: false)
-                    if medias.isEmpty { errorText = "没有找到相关番剧" }
-                case .movie:
-                    medias = try await FeedAPI.searchMedia(keyword: keyword, movie: true)
-                    if medias.isEmpty { errorText = "没有找到相关影视" }
+                case .bangumi, .movie:
+                    let result = try await FeedAPI.searchMedia(keyword: keyword, movie: scope == .movie)
+                    guard !Task.isCancelled else { return }
+                    medias = result.items
+                    hasMore = result.more
+                    if medias.isEmpty { errorText = scope == .movie ? "没有找到相关影视" : "没有找到相关番剧" }
                 case .user:
-                    users = try await FeedAPI.searchUser(keyword: keyword)
+                    let result = try await FeedAPI.searchUser(keyword: keyword)
+                    guard !Task.isCancelled else { return }
+                    users = result.items
+                    hasMore = result.more
                     if users.isEmpty { errorText = "没有找到相关 UP 主" }
                 }
             } catch {
@@ -112,8 +176,13 @@ struct SearchView: View {
 
                 if !vm.suggestions.isEmpty {
                     wordSection(title: "搜索建议", words: vm.suggestions)
-                } else if vm.activeKeyword.isEmpty, !vm.hotWords.isEmpty {
-                    wordSection(title: "热搜", words: vm.hotWords)
+                } else if vm.activeKeyword.isEmpty {
+                    if !vm.hotWords.isEmpty {
+                        wordSection(title: "热搜", words: vm.hotWords)
+                    }
+                    if !vm.history.isEmpty {
+                        wordSection(title: "搜索历史", words: vm.history)
+                    }
                 }
 
                 if vm.searching {
@@ -122,8 +191,16 @@ struct SearchView: View {
                         .padding(.top, 60)
                 } else if let error = vm.errorText {
                     HintView(icon: "magnifyingglass", text: error)
-                } else if vm.activeKeyword.isEmpty, vm.hotWords.isEmpty {
+                } else if vm.activeKeyword.isEmpty, vm.hotWords.isEmpty, vm.history.isEmpty {
                     HintView(icon: "magnifyingglass", text: "搜索视频 / 番剧 / UP 主")
+                }
+
+                // 海外 IP 的网页搜索搜不到受地区限制的番剧影视,要靠解析服务器
+                if vm.scope == .bangumi || vm.scope == .movie, !vm.activeKeyword.isEmpty,
+                   CDNSettings.shared.roamOn, !RoamAPI.isAuthorized {
+                    Text("受地区限制的番剧影视需要经解析服务器才搜得到:到 我的 → 设置 → 番剧解析 扫码授权")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 results
@@ -135,6 +212,7 @@ struct SearchView: View {
         .searchable(text: $query, prompt: "搜索视频 / 番剧 / UP 主")
         .onChange(of: query) { _, newValue in
             vm.inputChanged(newValue)
+            if newValue.isEmpty { vm.clearResults() }
         }
         .onSubmit(of: .search) {
             vm.submit(query)
@@ -208,6 +286,7 @@ struct SearchView: View {
                     ) {
                         if let bvid = item.bvid { router.openDetail(bvid) }
                     }
+                    .onAppear { vm.loadMoreIfNeeded(isLast: item.id == vm.videos.last?.id) }
                 }
             }
         case .bangumi, .movie:
@@ -231,6 +310,7 @@ struct SearchView: View {
                             .lineLimit(2)
                             .frame(width: 220, height: 60, alignment: .topLeading)
                     }
+                    .onAppear { vm.loadMoreIfNeeded(isLast: media.seasonId == vm.medias.last?.seasonId) }
                 }
             }
         case .user:
@@ -260,6 +340,7 @@ struct SearchView: View {
                             .lineLimit(1)
                     }
                     .frame(width: 240)
+                    .onAppear { vm.loadMoreIfNeeded(isLast: user.mid == vm.users.last?.mid) }
                 }
             }
         }

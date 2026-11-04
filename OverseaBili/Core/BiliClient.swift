@@ -13,7 +13,12 @@ enum BiliError: LocalizedError {
             case -101: return "账号未登录"
             case -352, -412: return "触发风控(\(code)),稍后再试"
             case -404: return "内容不存在"
-            case -10403, 87008: return "该视频有地区限制,海外无法播放"
+            case -10403, 87008:
+                return CDNSettings.shared.roamOn
+                    ? "该内容有地区限制,解析服务器也没有取到地址"
+                    : "该内容有地区限制,海外无法播放(可在 设置 → 番剧解析 中开启解析服务器)"
+            case -403: return "没有权限(可能需要大会员)"
+            case 12002: return "评论区已关闭"
             default: return "接口错误 \(code): \(message)"
             }
         case .emptyData: return "接口返回为空"
@@ -115,7 +120,8 @@ final class BiliClient {
                            query: [String: String] = [:],
                            wbi: Bool = false,
                            allowCodes: Set<Int> = [],
-                           referer: String? = nil) async throws -> T {
+                           referer: String? = nil,
+                           retriedWbi: Bool = false) async throws -> T {
         var q = query
         if wbi {
             let keys = try await wbiKeys()
@@ -129,6 +135,12 @@ final class BiliClient {
         }
         let (data, _) = try await session.data(for: req)
         let wrapped = try decoder.decode(BiliResponse<T>.self, from: data)
+        // wbi 接口偶发 -352/-403:密钥可能已轮换,刷新后重试一次
+        if wbi, !retriedWbi, wrapped.code == -352 || wrapped.code == -403 {
+            cachedWbiKeys = nil
+            return try await get(base, query: query, wbi: true, allowCodes: allowCodes,
+                                 referer: referer, retriedWbi: true)
+        }
         guard wrapped.code == 0 || allowCodes.contains(wrapped.code) else {
             throw BiliError.api(code: wrapped.code, message: wrapped.message ?? "")
         }

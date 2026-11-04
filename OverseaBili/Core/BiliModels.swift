@@ -59,6 +59,9 @@ struct Stat: Decodable, Hashable {
     let view: Int?
     let danmaku: Int?
     let like: Int?
+    var reply: Int? = nil
+    var coin: Int? = nil
+    var favorite: Int? = nil
 }
 
 struct VideoItem: Decodable, Identifiable, Hashable {
@@ -139,10 +142,12 @@ struct SearchUser: Decodable, Identifiable {
 
 struct SearchMediaData: Decodable {
     let result: [SearchMedia]?
+    var numPages: Int? = nil
 }
 
 struct SearchUserData: Decodable {
     let result: [SearchUser]?
+    var numPages: Int? = nil
 }
 
 // MARK: - 直播分区
@@ -223,6 +228,7 @@ struct TimelineEpisode: Decodable, Identifiable {
 struct SearchTypeData: Decodable {
     let result: [SearchItem]?
     let numResults: Int?
+    var numPages: Int? = nil
 }
 
 struct SearchItem: Decodable, Identifiable, Hashable {
@@ -257,6 +263,41 @@ struct PageInfo: Decodable, Hashable {
     let cid: Int
     let page: Int
     let part: String?
+    var duration: Int? = nil
+}
+
+/// 单个字段解析失败时置空,不让整个外层结构报错(合集等附加信息结构不稳定)。
+struct Lossy<Wrapped: Decodable>: Decodable {
+    let value: Wrapped?
+
+    init(from decoder: Decoder) throws {
+        value = try? Wrapped(from: decoder)
+    }
+}
+
+/// view 接口里的 UGC 合集(分节、全部剧集)。
+struct UgcSeason: Decodable {
+    struct Section: Decodable {
+        let title: String?
+        let episodes: LossyArray<Episode>?
+    }
+
+    struct Episode: Decodable {
+        struct Arc: Decodable {
+            let pic: String?
+            let duration: Int?
+            let author: Owner?
+            let stat: Stat?
+        }
+
+        let aid: Int?
+        let bvid: String?
+        let title: String?
+        let arc: Arc?
+    }
+
+    let title: String?
+    let sections: LossyArray<Section>?
 }
 
 struct ViewData: Decodable {
@@ -271,6 +312,15 @@ struct ViewData: Decodable {
     let owner: Owner?
     let stat: Stat?
     let pages: [PageInfo]?
+    var ugcSeason: Lossy<UgcSeason>? = nil
+    /// 番剧 bvid 的详情带跳转地址(/bangumi/play/epXXX)
+    var redirectUrl: String? = nil
+
+    var redirectEpId: Int? {
+        guard let redirectUrl,
+              let range = redirectUrl.range(of: #"/bangumi/play/ep\d+"#, options: .regularExpression) else { return nil }
+        return Int(redirectUrl[range].dropFirst("/bangumi/play/ep".count))
+    }
 }
 
 // MARK: - UP 空间(投稿列表)
@@ -394,9 +444,14 @@ struct DashTrack: Decodable {
 }
 
 struct DashData: Decodable {
+    struct Dolby: Decodable {
+        let audio: [DashTrack]?
+    }
+
     let duration: Int?
     let video: [DashTrack]?
     let audio: [DashTrack]?
+    var dolby: Dolby? = nil
 }
 
 struct PlayURLData: Decodable {
@@ -615,7 +670,13 @@ struct LegacyArchiveCard: Decodable {
 // MARK: - 我的(历史 / 稍后再看 / 收藏)
 
 struct HistoryCursorData: Decodable {
+    struct Cursor: Decodable {
+        let max: Int?
+        let viewAt: Int?
+    }
+
     let list: [HistoryItem]?
+    var cursor: Cursor? = nil
 }
 
 struct HistoryItem: Decodable, Identifiable {
@@ -641,6 +702,7 @@ struct ToViewData: Decodable {
 
 struct FavResourceData: Decodable {
     let medias: [FavMedia]?
+    var hasMore: Bool? = nil
 }
 
 struct FavMedia: Decodable, Identifiable {
@@ -774,8 +836,24 @@ struct PGCPlayURLResult: Decodable {
 }
 
 struct SeasonDetail: Decodable {
+    struct Rating: Decodable { let score: Double? }
+    struct Stats: Decodable { let views: Int? }
+    struct NewEp: Decodable { let desc: String? }
+
+    struct Section: Decodable {
+        let title: String?
+        let episodes: LossyArray<Episode>?
+    }
+
     let title: String?
     let episodes: [Episode]?
+    var cover: String? = nil
+    var evaluate: String? = nil
+    var seasonTitle: String? = nil
+    var rating: Rating? = nil
+    var stat: Stats? = nil
+    var newEp: NewEp? = nil
+    var section: LossyArray<Section>? = nil
 
     struct Episode: Decodable, Identifiable {
         /// ep_id(PGC 播放链路用)
@@ -786,6 +864,9 @@ struct SeasonDetail: Decodable {
         let title: String?
         let longTitle: String?
         let badge: String?
+        var aid: Int? = nil
+        /// 毫秒
+        var duration: Int? = nil
 
         /// 需要大会员
         var isVip: Bool { (badge ?? "").contains("会员") }

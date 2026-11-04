@@ -2,13 +2,20 @@ import AVKit
 import SwiftUI
 
 struct PlayerScreen: View {
-    let bvid: String
-    /// PGC 剧集传 ep_id,走官方播放链路
-    var epId: Int?
+    let request: PlayRequest
+
+    init(request: PlayRequest) {
+        self.request = request
+    }
+
+    init(bvid: String) {
+        request = PlayRequest(bvid: bvid)
+    }
 
     @StateObject private var vm = PlayerViewModel()
     @Environment(\.dismiss) private var dismiss
-    @State private var playingBvid = ""
+    /// 当前在播的:初始为 request,连播 / 切集时替换,复用同一个播放器
+    @State private var current: PlayRequest?
 
     var body: some View {
         ZStack {
@@ -43,7 +50,7 @@ struct PlayerScreen: View {
                         .font(.headline)
                         .multilineTextAlignment(.center)
                     HStack(spacing: 24) {
-                        Button("重试") { Task { await vm.load(bvid: bvid) } }
+                        Button("重试") { Task { await vm.load(current ?? request) } }
                         Button("返回") { dismiss() }
                     }
                 }
@@ -77,6 +84,16 @@ struct PlayerScreen: View {
                 }
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if let left = vm.upNextCountdown, let next = vm.upNext {
+                UpNextCard(left: left, title: next.title) {
+                    vm.playUpNextNow()
+                } onCancel: {
+                    vm.cancelUpNext()
+                }
+                .padding(60)
+            }
+        }
         .overlay(alignment: .bottom) {
             if let notice = vm.resumeNotice {
                 Text(notice)
@@ -90,20 +107,18 @@ struct PlayerScreen: View {
         }
         .animation(.easeInOut(duration: 0.25), value: vm.resumeNotice)
         .animation(.easeInOut(duration: 0.2), value: vm.timeControl)
-        .task(id: playingBvid) {
-            guard !playingBvid.isEmpty else { return }
-            // 自动连播:播完接下一个视频,复用同一个播放器
+        .task(id: current?.id) {
+            guard let current else { return }
             vm.onPlayNext = { next in
                 Task { @MainActor in
                     vm.stop()
-                    playingBvid = next
+                    self.current = next
                 }
             }
-            // 连播换视频后回到普通 UGC 链路
-            await vm.load(bvid: playingBvid, epId: playingBvid == bvid ? epId : nil)
+            await vm.load(current)
         }
         .onAppear {
-            if playingBvid.isEmpty { playingBvid = bvid }
+            if current == nil { current = request }
         }
         .onDisappear {
             vm.stop()
@@ -118,15 +133,47 @@ struct PlayerScreen: View {
     }
 }
 
+/// 播完后的倒计时卡片。
+private struct UpNextCard: View {
+    let left: Int
+    let title: String
+    let onPlay: () -> Void
+    let onCancel: () -> Void
+
+    @FocusState private var playFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("\(left) 秒后播放下一个")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+                .lineLimit(2)
+            HStack(spacing: 20) {
+                Button("立即播放", action: onPlay)
+                    .focused($playFocused)
+                Button("取消", action: onCancel)
+            }
+        }
+        .frame(width: 640, alignment: .leading)
+        .padding(36)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .onAppear { playFocused = true }
+    }
+}
+
 /// AVPlayerViewController 容器:
 /// - 弹幕层挂 contentOverlayView
-/// - 转场条菜单:清晰度 / 弹幕开关 / 重新加载;倍速用系统原生 speeds
-/// - 下滑信息栏:「线路」CDN 面板 + 「高能」弹幕密度曲线
+/// - 转场条菜单:选集 / 清晰度 / 弹幕 / 自动连播 / 重新加载;倍速用系统原生 speeds
+/// - 下滑信息栏:合集·清单 / 评论 / 线路 / 质量 / 高能
 struct PlayerHost: UIViewControllerRepresentable {
     @ObservedObject var vm: PlayerViewModel
 
     final class Coordinator {
         var overlay: DanmakuOverlayView?
+        var panelKey = ""
+        var menuKey = ""
         deinit { overlay?.detach() }
     }
 
@@ -151,6 +198,28 @@ struct PlayerHost: UIViewControllerRepresentable {
         context.coordinator.overlay = overlay
         vm.danmakuOverlay = overlay
 
+        return vc
+    }
+
+    /// 清单 / 评论面板随内容增减;只在变化时重设,否则会把面板里的焦点打断。
+    private func installPanels(on vc: AVPlayerViewController, coordinator: Coordinator) {
+        let key = "\(vm.playlist.map { ObjectIdentifier($0).hashValue } ?? 0)-\(vm.comments != nil)"
+        guard key != coordinator.panelKey else { return }
+        coordinator.panelKey = key
+
+        var panels: [UIViewController] = []
+        if let playlist = vm.playlist {
+            let panel = UIHostingController(rootView: PlaylistPanelView(vm: vm, playlist: playlist))
+            panel.title = String("\(playlist.kind)·\(playlist.title)".prefix(18))
+            panel.preferredContentSize = CGSize(width: 1700, height: 460)
+            panels.append(panel)
+        }
+        if vm.comments != nil {
+            let panel = UIHostingController(rootView: CommentsPanelView(vm: vm))
+            panel.title = "评论"
+            panel.preferredContentSize = CGSize(width: 1700, height: 760)
+            panels.append(panel)
+        }
         let cdnPanel = UIHostingController(rootView: CDNPanelView(vm: vm))
         cdnPanel.title = "线路"
         cdnPanel.preferredContentSize = CGSize(width: 1700, height: 460)
@@ -160,20 +229,56 @@ struct PlayerHost: UIViewControllerRepresentable {
         let heatPanel = UIHostingController(rootView: HeatPanelView(vm: vm))
         heatPanel.title = "高能"
         heatPanel.preferredContentSize = CGSize(width: 1700, height: 420)
-        vc.customInfoViewControllers = [cdnPanel, statsPanel, heatPanel]
-        return vc
+        vc.customInfoViewControllers = panels + [cdnPanel, statsPanel, heatPanel]
     }
 
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
         if vc.player !== vm.player {
             vc.player = vm.player
         }
-        vc.transportBarCustomMenuItems = buildMenus()
+        installPanels(on: vc, coordinator: context.coordinator)
+        // vm 每秒发布多次,菜单只在内容变化时重建,否则展开中的菜单会被打断
+        let settings = CDNSettings.shared
+        let menuKey = [
+            "\(vm.pages.count)", "\(vm.currentPageIndex)", "\(vm.epId ?? 0)", "\(vm.season?.episodes.count ?? 0)",
+            "\(vm.availableQualities.map(\.qn))", "\(vm.currentQN)", "\(vm.danmakuEnabled)", "\(settings.autoNext)",
+            "\(settings.danmakuArea)", "\(settings.danmakuOpacity)", "\(settings.danmakuLevel)",
+        ].joined(separator: "|")
+        if menuKey != context.coordinator.menuKey {
+            context.coordinator.menuKey = menuKey
+            vc.transportBarCustomMenuItems = buildMenus()
+        }
         context.coordinator.overlay?.enabled = vm.danmakuEnabled
     }
 
     static func dismantleUIViewController(_ vc: AVPlayerViewController, coordinator: Coordinator) {
         coordinator.overlay?.detach()
+    }
+
+    /// 弹幕防挡的常用项,播放中直接改。
+    private func danmakuMenu() -> UIMenu {
+        let settings = CDNSettings.shared
+        func choice<T: Equatable>(_ title: String, _ options: [(T, String)], current: T, apply: @escaping (T) -> Void) -> UIMenu {
+            UIMenu(
+                title: title,
+                options: .singleSelection,
+                children: options.map { value, label in
+                    UIAction(title: label, state: value == current ? .on : .off) { _ in apply(value) }
+                }
+            )
+        }
+        return UIMenu(
+            title: "弹幕设置",
+            image: UIImage(systemName: "slider.horizontal.3"),
+            children: [
+                choice("显示区域", [(0.25, "四分之一屏"), (0.5, "半屏"), (0.75, "四分之三屏"), (1.0, "全屏")],
+                       current: settings.danmakuArea) { settings.danmakuArea = $0 },
+                choice("不透明度", [(0.4, "40%"), (0.6, "60%"), (0.85, "85%"), (1.0, "100%")],
+                       current: settings.danmakuOpacity) { settings.danmakuOpacity = $0 },
+                choice("云屏蔽等级", [(0, "不屏蔽"), (3, "3 级(轻度)"), (5, "5 级(中度)"), (8, "8 级(严格)")],
+                       current: settings.danmakuLevel) { settings.danmakuLevel = $0 },
+            ]
+        )
     }
 
     private func buildMenus() -> [UIMenuElement] {
@@ -190,6 +295,25 @@ struct PlayerHost: UIViewControllerRepresentable {
             }
             items.append(UIMenu(
                 title: "选集(\(model.pages.count)P)",
+                image: UIImage(systemName: "list.number"),
+                options: .singleSelection,
+                children: actions
+            ))
+        }
+        if let season = model.season, season.episodes.count > 1 {
+            let actions = season.episodes.map { episode in
+                UIAction(
+                    title: episode.title,
+                    state: episode.epId == model.epId ? .on : .off
+                ) { _ in
+                    Task { @MainActor in
+                        guard episode.epId != model.epId else { return }
+                        model.switchEpisode(episode)
+                    }
+                }
+            }
+            items.append(UIMenu(
+                title: "选集(\(season.episodes.count))",
                 image: UIImage(systemName: "list.number"),
                 options: .singleSelection,
                 children: actions
@@ -218,6 +342,15 @@ struct PlayerHost: UIViewControllerRepresentable {
         ) { _ in
             Task { @MainActor in model.toggleDanmaku() }
         })
+        items.append(danmakuMenu())
+        let settings = CDNSettings.shared
+        items.append(UIAction(
+            title: "自动连播",
+            image: UIImage(systemName: "text.line.first.and.arrowtriangle.forward"),
+            state: settings.autoNext ? .on : .off
+        ) { _ in
+            settings.autoNext.toggle()
+        })
         items.append(UIAction(
             title: "重新加载",
             image: UIImage(systemName: "arrow.clockwise")
@@ -225,6 +358,63 @@ struct PlayerHost: UIViewControllerRepresentable {
             Task { @MainActor in model.reloadStream() }
         })
         return items
+    }
+}
+
+/// 合集·清单面板:横向一排,当前条目高亮,接近末尾自动翻页。
+struct PlaylistPanelView: View {
+    @ObservedObject var vm: PlayerViewModel
+    @ObservedObject var playlist: Playlist
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("\(playlist.kind) · \(playlist.title)(\(max(playlist.total, playlist.items.count)))")
+                .font(.headline)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 30) {
+                        ForEach(playlist.items) { item in
+                            cell(item).id(item.bvid)
+                        }
+                    }
+                    .padding(.vertical, 18)
+                }
+                .onAppear { proxy.scrollTo(vm.bvid, anchor: .center) }
+            }
+        }
+        .padding(32)
+    }
+
+    private func cell(_ item: PlaylistItem) -> some View {
+        VideoCell(
+            title: item.title,
+            pic: item.cover,
+            subtitle: item.bvid == vm.bvid ? "正在播放" : "\((playlist.index(of: item.bvid) ?? 0) + 1) · \(formatDuration(item.duration))",
+            duration: ""
+        ) {
+            vm.playItem(item)
+        }
+        .frame(width: 330)
+        .onAppear {
+            if playlist.hasMore, item.id == playlist.items.last?.id {
+                Task { try? await playlist.loadMore() }
+            }
+        }
+    }
+}
+
+/// 评论面板:边看边翻。
+struct CommentsPanelView: View {
+    @ObservedObject var vm: PlayerViewModel
+
+    var body: some View {
+        ScrollView {
+            if let comments = vm.comments {
+                CommentsView(model: comments)
+                    .id(comments.oid)
+                    .padding(32)
+            }
+        }
     }
 }
 
@@ -365,6 +555,9 @@ struct StatsPanelView: View {
                 metric("已下载", formatBytes(vm.stats.downloadedBytes), unit: "")
                 metric("卡顿", "\(vm.stallCount)", unit: "次",
                        tint: vm.stallCount > 0 ? .orange : .green)
+                metric("前方缓存", formatBytes(vm.stats.cacheAheadBytes), unit: "")
+                metric("丢帧", "\(vm.droppedFrames)", unit: "帧",
+                       tint: vm.droppedFrames > 0 ? .orange : .green)
                 metric("线路切换", "\(vm.stats.failovers)", unit: "次")
                 metric("分块", "\(vm.stats.chunkCount)", unit: "块")
                 metric("重试/失败", "\(vm.stats.chunkRetries)/\(vm.stats.chunkFailures)", unit: "",

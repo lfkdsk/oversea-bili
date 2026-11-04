@@ -38,6 +38,7 @@ final class AuthManager: ObservableObject {
     func logout() async {
         CookieVault.clear()
         LoginExpiry.clear()
+        RoamAPI.auth = nil
         needsRelogin = false
         isLoggedIn = false
         uname = nil

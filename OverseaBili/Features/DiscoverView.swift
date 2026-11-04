@@ -8,6 +8,7 @@ final class DiscoverViewModel: ObservableObject {
     @Published var cinema: [BangumiSeason] = []
     @Published var knowledgeRank: [VideoItem] = []
     @Published var movieRank: [VideoItem] = []
+    @Published var documentaryRank: [VideoItem] = []
     @Published var timelineToday: [TimelineEpisode] = []
     @Published var loading = false
     @Published var message: String?
@@ -27,11 +28,13 @@ final class DiscoverViewModel: ObservableObject {
         async let preciousTask = (try? FeedAPI.precious()) ?? []
         async let knowledgeTask = (try? RankAPI.ranking(rid: 36)) ?? []
         async let movieTask = (try? RankAPI.ranking(rid: 181)) ?? []
+        async let documentaryTask = (try? RankAPI.ranking(rid: 177)) ?? []
         async let timelineTask = (try? BangumiAPI.timeline(types: 1)) ?? []
         weekly = await weeklyTask
         precious = await preciousTask
         knowledgeRank = await knowledgeTask
         movieRank = await movieTask
+        documentaryRank = await documentaryTask
         // 今日更新:优先 is_today,没有则取第一个有剧集的日子
         let days = await timelineTask
         timelineToday = days.first(where: { $0.today && !($0.episodes ?? []).isEmpty })?.episodes
@@ -57,11 +60,22 @@ struct DiscoverView: View {
     @EnvironmentObject private var auth: AuthManager
     @StateObject private var vm = DiscoverViewModel()
     @State private var seasonRequest: SeasonRequest?
+    @State private var timelineTypes: TimelineRequest?
+
+    private struct TimelineRequest: Identifiable {
+        let types: Int
+        var id: Int { types }
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: TVLayout.rowSpacing) {
+                    HStack(spacing: 24) {
+                        Button("番剧时间表") { timelineTypes = TimelineRequest(types: 1) }
+                        Button("国创时间表") { timelineTypes = TimelineRequest(types: 4) }
+                    }
+
                     if vm.loading, vm.weekly.isEmpty {
                         ProgressView()
                             .frame(maxWidth: .infinity)
@@ -75,7 +89,8 @@ struct DiscoverView: View {
                                     if let seasonId = episode.seasonId {
                                         seasonRequest = SeasonRequest(
                                             seasonId: seasonId,
-                                            title: episode.title ?? "番剧"
+                                            title: episode.title ?? "番剧",
+                                            epId: episode.episodeId
                                         )
                                     }
                                 }
@@ -139,6 +154,15 @@ struct DiscoverView: View {
                         }
                     }
 
+                    if !vm.documentaryRank.isEmpty {
+                        RailSection(title: "纪录片区精选") {
+                            ForEach(vm.documentaryRank.prefix(15)) { item in
+                                VideoCell(item: item) { router.openDetail(item.bvid) }
+                                    .frame(width: TVLayout.railCardWidth)
+                            }
+                        }
+                    }
+
                     if !auth.isLoggedIn {
                         Text("登录后这里还会显示你的追番、追剧")
                             .font(.caption)
@@ -164,7 +188,10 @@ struct DiscoverView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: vm.message)
         .fullScreenCover(item: $seasonRequest) { request in
-            SeasonScreen(seasonId: request.seasonId, fallbackTitle: request.title)
+            SeasonScreen(seasonId: request.seasonId, fallbackTitle: request.title, epId: request.epId)
+        }
+        .fullScreenCover(item: $timelineTypes) { request in
+            TimelineScreen(types: request.types)
         }
         .task { await vm.initialLoad(mid: auth.mid) }
         .onChange(of: auth.isLoggedIn) { _, _ in

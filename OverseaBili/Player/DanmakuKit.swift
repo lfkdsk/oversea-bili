@@ -7,10 +7,12 @@ struct Danmu {
     let fontsize: Int
     let color: UInt32
     let text: String
+    /// 云屏蔽等级 0-10;直播弹幕没有这个字段
+    var weight: Int? = nil
 }
 
 /// 手写最小 protobuf 解析,对应 DmSegMobileReply { repeated DanmakuElem elems = 1 }
-/// DanmakuElem: progress=2, mode=3, fontsize=4, color=5, content=7
+/// DanmakuElem: progress=2, mode=3, fontsize=4, color=5, content=7, weight=9
 enum DanmakuProto {
     static func parseSegment(_ data: Data) -> [Danmu] {
         let bytes = [UInt8](data)
@@ -39,6 +41,7 @@ enum DanmakuProto {
         var fontsize = 25
         var color: UInt32 = 0xFFFFFF
         var text = ""
+        var weight = 0
         while i < end {
             guard let key = readVarint(bytes, &i) else { return nil }
             let field = key >> 3
@@ -50,6 +53,7 @@ enum DanmakuProto {
                 case 3: mode = Int(value)
                 case 4: fontsize = Int(value)
                 case 5: color = UInt32(truncatingIfNeeded: value)
+                case 9: weight = Int(value)
                 default: break
                 }
             } else if wire == 2 {
@@ -64,7 +68,7 @@ enum DanmakuProto {
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, progress >= 0, (1...5).contains(mode) else { return nil }
-        return Danmu(progressMs: progress, mode: mode, fontsize: fontsize, color: color, text: trimmed)
+        return Danmu(progressMs: progress, mode: mode, fontsize: fontsize, color: color, text: trimmed, weight: weight)
     }
 
     private static func readVarint(_ bytes: [UInt8], _ i: inout Int) -> UInt64? {
@@ -282,6 +286,7 @@ final class DanmakuOverlayView: UIView {
         for danmu in danmus {
             // 智能防挡:屏蔽词过滤 + 同屏条数上限(超限直接丢弃,优先保证画面可见)
             guard !style.blocked(danmu.text) else { continue }
+            if let weight = danmu.weight, weight < style.level { continue }
             guard scrollItems.count + staticItems.count < style.maxOnScreen else { continue }
             addOne(danmu)
         }

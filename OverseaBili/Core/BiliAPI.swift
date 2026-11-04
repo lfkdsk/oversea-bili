@@ -43,40 +43,58 @@ enum FeedAPI {
             query: ["ps": String(count), "fresh_type": "4"],
             wbi: true
         )
-        return data.item ?? []
+        // 混着的广告/直播卡 bvid 为空,只留视频
+        return (data.item ?? []).filter { $0.bvid.hasPrefix("BV") }
     }
 
-    static func search(keyword: String, page: Int = 1) async throws -> [SearchItem] {
+    static func search(keyword: String, page: Int = 1) async throws -> (items: [SearchItem], more: Bool) {
         let data: SearchTypeData = try await BiliClient.shared.get(
             "https://api.bilibili.com/x/web-interface/wbi/search/type",
             query: ["search_type": "video", "keyword": keyword, "page": String(page)],
             wbi: true
         )
-        return (data.result ?? []).filter { $0.bvid != nil }
+        return ((data.result ?? []).filter { $0.bvid != nil }, page < (data.numPages ?? 1))
     }
 
-    /// 番剧/影视搜索。
-    static func searchMedia(keyword: String, movie: Bool = false) async throws -> [SearchMedia] {
-        let data: SearchMediaData = try await BiliClient.shared.get(
-            "https://api.bilibili.com/x/web-interface/wbi/search/type",
-            query: [
-                "search_type": movie ? "media_ft" : "media_bangumi",
-                "keyword": keyword,
-                "page": "1",
-            ],
-            wbi: true
-        )
-        return (data.result ?? []).filter { $0.seasonId != nil }
+    /// 番剧/影视搜索。海外 IP 的网页搜索会过滤掉受地区限制的条目,开了解析服务器时再经它搜一遍并合并。
+    static func searchMedia(keyword: String, movie: Bool = false, page: Int = 1) async throws -> (items: [SearchMedia], more: Bool) {
+        var items: [SearchMedia] = []
+        var more = false
+        var webError: Error?
+        do {
+            let data: SearchMediaData = try await BiliClient.shared.get(
+                "https://api.bilibili.com/x/web-interface/wbi/search/type",
+                query: [
+                    "search_type": movie ? "media_ft" : "media_bangumi",
+                    "keyword": keyword,
+                    "page": String(page),
+                ],
+                wbi: true
+            )
+            items = (data.result ?? []).filter { $0.seasonId != nil }
+            more = page < (data.numPages ?? 1)
+        } catch {
+            webError = error
+        }
+        if CDNSettings.shared.roamOn, let roam = try? await RoamAPI.search(keyword: keyword, movie: movie, page: page) {
+            var seen = Set(items.compactMap(\.seasonId))
+            for media in roam.items where seen.insert(media.seasonId ?? 0).inserted {
+                items.append(media)
+            }
+            more = more || roam.more
+        }
+        if items.isEmpty, let webError { throw webError }
+        return (items, more)
     }
 
     /// UP 主搜索。
-    static func searchUser(keyword: String) async throws -> [SearchUser] {
+    static func searchUser(keyword: String, page: Int = 1) async throws -> (items: [SearchUser], more: Bool) {
         let data: SearchUserData = try await BiliClient.shared.get(
             "https://api.bilibili.com/x/web-interface/wbi/search/type",
-            query: ["search_type": "bili_user", "keyword": keyword, "page": "1"],
+            query: ["search_type": "bili_user", "keyword": keyword, "page": String(page)],
             wbi: true
         )
-        return (data.result ?? []).filter { $0.mid != nil }
+        return ((data.result ?? []).filter { $0.mid != nil }, page < (data.numPages ?? 1))
     }
 
     /// 热搜词。
@@ -102,11 +120,22 @@ enum FeedAPI {
 }
 
 enum VideoAPI {
+    /// 优先 wbi/view(海外 IP 上非 wbi 的 view 容易被 -412 封禁),失败回落老接口。
     static func detail(bvid: String) async throws -> ViewData {
-        try await BiliClient.shared.get(
-            "https://api.bilibili.com/x/web-interface/view",
-            query: ["bvid": bvid]
-        )
+        do {
+            return try await BiliClient.shared.get(
+                "https://api.bilibili.com/x/web-interface/wbi/view",
+                query: ["bvid": bvid],
+                wbi: true
+            )
+        } catch BiliError.api(let code, let message) where [-404, 62002, 62004].contains(code) {
+            throw BiliError.api(code: code, message: message)
+        } catch {
+            return try await BiliClient.shared.get(
+                "https://api.bilibili.com/x/web-interface/view",
+                query: ["bvid": bvid]
+            )
+        }
     }
 
     /// DASH 播放地址(fnval=4048 全能力),登录/大会员可拿 1080P60/4K。
@@ -400,12 +429,17 @@ extension FeedAPI {
 
 /// 我的:历史 / 稍后再看 / 收藏。
 enum MineAPI {
-    static func history() async throws -> [HistoryItem] {
+    static func history(max: Int = 0, viewAt: Int = 0) async throws -> (items: [HistoryItem], cursor: HistoryCursorData.Cursor?) {
+        var query = ["ps": "30", "type": "archive"]
+        if max > 0 {
+            query["max"] = String(max)
+            query["view_at"] = String(viewAt)
+        }
         let data: HistoryCursorData = try await BiliClient.shared.get(
             "https://api.bilibili.com/x/web-interface/history/cursor",
-            query: ["ps": "30", "type": "archive"]
+            query: query
         )
-        return (data.list ?? []).filter { $0.bvid?.hasPrefix("BV") == true }
+        return ((data.list ?? []).filter { $0.bvid?.hasPrefix("BV") == true }, data.cursor)
     }
 
     static func toview() async throws -> [VideoItem] {
@@ -423,12 +457,12 @@ enum MineAPI {
         return data.list ?? []
     }
 
-    static func favResources(mediaId: Int) async throws -> [FavMedia] {
+    static func favResources(mediaId: Int, page: Int = 1) async throws -> (items: [FavMedia], more: Bool) {
         let data: FavResourceData = try await BiliClient.shared.get(
             "https://api.bilibili.com/x/v3/fav/resource/list",
-            query: ["media_id": String(mediaId), "ps": "20", "pn": "1", "platform": "web"]
+            query: ["media_id": String(mediaId), "ps": "20", "pn": String(page), "platform": "web"]
         )
-        return data.medias ?? []
+        return (data.medias ?? [], data.hasMore ?? false)
     }
 }
 
@@ -462,16 +496,17 @@ enum LiveAPI {
         return (data.data ?? []).filter { $0.id != nil }
     }
 
-    /// 分区房间列表。
+    /// 分区房间列表。新接口 second/getList 海外实测稳定 -352(wbi 也不行),用老接口 room/v3/area/getRoomList。
     static func areaRooms(parentId: Int, areaId: Int, page: Int) async throws -> [LiveRoom] {
         let data: LiveAreaRoomsData = try await BiliClient.shared.get(
-            "https://api.live.bilibili.com/xlive/web-interface/v1/second/getList",
+            "https://api.live.bilibili.com/room/v3/area/getRoomList",
             query: [
                 "platform": "web",
                 "parent_area_id": String(parentId),
                 "area_id": String(areaId),
                 "sort_type": "online",
                 "page": String(page),
+                "page_size": "30",
             ],
             referer: "https://live.bilibili.com/"
         )
@@ -549,6 +584,35 @@ enum SpaceAPI {
         )
         return data?.follower
     }
+
+    /// 名片:签名、粉丝数、投稿数。
+    static func card(mid: Int) async throws -> SpaceCardData {
+        try await BiliClient.shared.get(
+            "https://api.bilibili.com/x/web-interface/card",
+            query: ["mid": String(mid), "photo": "false"]
+        )
+    }
+
+    /// UP 主的合集与系列。
+    static func collections(mid: Int) async throws -> [UpCollection] {
+        let data: SeasonsSeriesData = try await BiliClient.shared.get(
+            "https://api.bilibili.com/x/polymer/web-space/seasons_series_list",
+            query: ["mid": String(mid), "page_num": "1", "page_size": "20"],
+            wbi: true
+        )
+        let seasons = (data.itemsLists?.seasonsList ?? []).compactMap { entry -> UpCollection? in
+            guard let meta = entry.meta, let id = meta.seasonId else { return nil }
+            return UpCollection(mlType: Playlist.seasonType, bizId: id, label: "合集",
+                                title: (meta.name ?? "").replacingOccurrences(of: "合集·", with: ""),
+                                cover: meta.cover, total: meta.total ?? 0)
+        }
+        let series = (data.itemsLists?.seriesList ?? []).compactMap { entry -> UpCollection? in
+            guard let meta = entry.meta, let id = meta.seriesId else { return nil }
+            return UpCollection(mlType: Playlist.seriesType, bizId: id, label: "系列",
+                                title: meta.name ?? "", cover: meta.cover, total: meta.total ?? 0)
+        }
+        return seasons + series
+    }
 }
 
 /// 番剧 / 剧集(PGC)。
@@ -562,11 +626,11 @@ enum BangumiAPI {
         return data.list ?? []
     }
 
-    /// 季详情(含全部剧集,用于选集页)。
-    static func season(seasonId: Int) async throws -> SeasonDetail {
+    /// 季详情(含全部剧集,用于选集页)。seasonId 为 0 时按 ep_id 查。
+    static func season(seasonId: Int, epId: Int? = nil) async throws -> SeasonDetail {
         try await BiliClient.shared.getPGC(
             "https://api.bilibili.com/pgc/view/web/season",
-            query: ["season_id": String(seasonId)]
+            query: seasonId > 0 ? ["season_id": String(seasonId)] : ["ep_id": String(epId ?? 0)]
         )
     }
 
@@ -580,20 +644,25 @@ enum BangumiAPI {
 
     /// PGC 正规播放链路(ep_id 维度)。番剧/影视的官方入口,
     /// 大会员内容与地区授权都由该接口判定,错误码能明确区分原因。
+    /// 海外多数番剧在这里返回 -10403,开了解析服务器时改走它。
     static func playURL(epId: Int, cid: Int) async throws -> PlayURLData {
-        let wrapped: PGCPlayURLResult = try await BiliClient.shared.getPGC(
-            "https://api.bilibili.com/pgc/player/web/v2/playurl",
-            query: [
-                "ep_id": String(epId),
-                "cid": String(cid),
-                "qn": "127",
-                "fnval": "4048",
-                "fnver": "0",
-                "fourk": "1",
-            ]
-        )
-        guard let info = wrapped.videoInfo else { throw BiliError.emptyData }
-        return info
+        do {
+            let wrapped: PGCPlayURLResult = try await BiliClient.shared.getPGC(
+                "https://api.bilibili.com/pgc/player/web/v2/playurl",
+                query: [
+                    "ep_id": String(epId),
+                    "cid": String(cid),
+                    "qn": "127",
+                    "fnval": "4048",
+                    "fnver": "0",
+                    "fourk": "1",
+                ]
+            )
+            guard let info = wrapped.videoInfo else { throw BiliError.emptyData }
+            return info
+        } catch BiliError.api(let code, _) where (code == -10403 || code == 87008) && CDNSettings.shared.roamOn {
+            return try await RoamAPI.playURL(epId: epId, cid: cid)
+        }
     }
 
 }
