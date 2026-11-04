@@ -57,7 +57,9 @@ enum FeedAPI {
     }
 
     /// 番剧/影视搜索。海外 IP 的网页搜索会过滤掉受地区限制的条目,开了解析服务器时再经它搜一遍并合并。
-    static func searchMedia(keyword: String, movie: Bool = false, page: Int = 1) async throws -> (items: [SearchMedia], more: Bool) {
+    /// roamError:解析服务器这一路失败的原因(已授权时才有),结果可能不全,界面要说出来。
+    static func searchMedia(keyword: String, movie: Bool = false, page: Int = 1) async throws
+        -> (items: [SearchMedia], more: Bool, roamError: String?) {
         var items: [SearchMedia] = []
         var more = false
         var webError: Error?
@@ -76,15 +78,39 @@ enum FeedAPI {
         } catch {
             webError = error
         }
-        if CDNSettings.shared.roamOn, let roam = try? await RoamAPI.search(keyword: keyword, movie: movie, page: page) {
-            var seen = Set(items.compactMap(\.seasonId))
-            for media in roam.items where seen.insert(media.seasonId ?? 0).inserted {
-                items.append(media)
+        var roamError: String?
+        #if DEBUG
+        print("[roam-search] roamOn=\(CDNSettings.shared.roamOn) authorized=\(RoamAPI.isAuthorized) webItems=\(items.count) webError=\(webError.map { "\($0)" } ?? "nil")")
+        #endif
+        if CDNSettings.shared.roamOn, RoamAPI.isAuthorized {
+            do {
+                let roam = try await RoamAPI.search(keyword: keyword, movie: movie, page: page)
+                var seen = Set(items.compactMap(\.seasonId))
+                for media in roam.items where seen.insert(media.seasonId ?? 0).inserted {
+                    items.append(media)
+                }
+                more = more || roam.more
+            } catch {
+                roamError = (error as? BiliError)?.errorDescription ?? error.localizedDescription
+                #if DEBUG
+                print("[roam-search] failed: \(roamError ?? "")")
+                #endif
             }
-            more = more || roam.more
         }
-        if items.isEmpty, let webError { throw webError }
-        return (items, more)
+        if items.isEmpty, roamError == nil, let webError { throw webError }
+        return (rankMedia(items, keyword: keyword), more, roamError)
+    }
+
+    /// 片名完全一致的排最前,其次是前缀匹配。网页结果排在解析结果之前,
+    /// 不重排的话「四重奏」会被挤到「准妈妈四重奏」后面。
+    static func rankMedia(_ items: [SearchMedia], keyword: String) -> [SearchMedia] {
+        func rank(_ media: SearchMedia) -> Int {
+            if media.cleanTitle == keyword { return 0 }
+            return media.cleanTitle.hasPrefix(keyword) ? 1 : 2
+        }
+        return items.enumerated()
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+            .map(\.element)
     }
 
     /// UP 主搜索。

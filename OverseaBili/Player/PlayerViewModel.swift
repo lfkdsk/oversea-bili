@@ -84,6 +84,7 @@ final class CDNSettings: ObservableObject {
     @Published var roamOn: Bool {
         didSet { UserDefaults.standard.set(roamOn, forKey: "roam.on") }
     }
+    /// 自定义解析服务器;空字符串 = 内置默认(界面上不显示默认地址)
     @Published var roamServer: String {
         didSet { UserDefaults.standard.set(roamServer, forKey: "roam.server") }
     }
@@ -123,7 +124,7 @@ final class CDNSettings: ObservableObject {
         dolbyAudio = UserDefaults.standard.object(forKey: "play.dolbyAudio") as? Bool ?? false
         autoNext = UserDefaults.standard.object(forKey: "play.autoNext") as? Bool ?? true
         roamOn = UserDefaults.standard.object(forKey: "roam.on") as? Bool ?? true
-        roamServer = UserDefaults.standard.string(forKey: "roam.server") ?? RoamAPI.defaultServer
+        roamServer = UserDefaults.standard.string(forKey: "roam.server") ?? ""
         roamArea = UserDefaults.standard.string(forKey: "roam.area") ?? "auto"
 
         let style = DanmakuStyle.shared

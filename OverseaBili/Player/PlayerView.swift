@@ -217,7 +217,7 @@ struct PlayerHost: UIViewControllerRepresentable {
         if vm.comments != nil {
             let panel = UIHostingController(rootView: CommentsPanelView(vm: vm))
             panel.title = "评论"
-            panel.preferredContentSize = CGSize(width: 1700, height: 760)
+            panel.preferredContentSize = CommentsPanelView.size
             panels.append(panel)
         }
         let cdnPanel = UIHostingController(rootView: CDNPanelView(vm: vm))
@@ -405,9 +405,12 @@ struct PlaylistPanelView: View {
 
 /// 评论面板:边看边翻。
 struct CommentsPanelView: View {
+    static let size = CGSize(width: 1700, height: 600)
+
     @ObservedObject var vm: PlayerViewModel
 
     var body: some View {
+        // 必须固定尺寸:ScrollView 不限高时,系统按内容撑高面板,把标签栏顶出屏幕
         ScrollView {
             if let comments = vm.comments {
                 CommentsView(model: comments)
@@ -415,6 +418,7 @@ struct CommentsPanelView: View {
                     .padding(32)
             }
         }
+        .frame(width: Self.size.width, height: Self.size.height)
     }
 }
 

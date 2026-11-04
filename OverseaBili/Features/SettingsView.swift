@@ -122,7 +122,7 @@ struct SettingsView: View {
                 } else {
                     Button("扫码授权") { showRoamLogin = true }
                 }
-                TextField("解析服务器", text: $settings.roamServer)
+                TextField("自定义解析服务器(留空用默认)", text: $settings.roamServer)
             } header: {
                 Text("番剧解析")
             } footer: {

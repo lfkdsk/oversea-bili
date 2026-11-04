@@ -64,7 +64,7 @@ ChunkEngine:2MB 分块,每块走当前最优线路;失败指数冷却(15s→120s
 
 调试启动参数:`-playBvid BVxxx`(直达播放器)/ `-detailBvid BVxxx`(直达详情页)/
 `-liveRoom <id>`(直达直播间)/ `-seasonId <id>`(直达选集页)/ `-upMid <mid>`(直达 UP 空间)/
-`-timeline <1|4>`(直达时间表)/ `-initialTab N` / `-showLogin YES` / `-showRoamLogin YES`(解析服务器授权)/
+`-timeline <1|4>`(直达时间表)/ `-initialTab N` / `-showLogin YES` / `-showRoamLogin YES`(解析服务器授权)/ `-searchKeyword <词>`(直接搜索)/
 `-directPlay YES`(绕过智能选路)
 
 ## 已知限制

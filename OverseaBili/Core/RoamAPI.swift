@@ -144,7 +144,8 @@ enum RoamAPI {
     }
 
     private static func baseURL() throws -> String {
-        let server = CDNSettings.shared.roamServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let custom = CDNSettings.shared.roamServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let server = custom.isEmpty ? defaultServer : custom
         guard let comps = URLComponents(string: server), comps.scheme == "https", comps.host != nil else {
             throw BiliError.notPlayable("解析服务器必须是 https 地址")
         }
@@ -236,6 +237,11 @@ enum RoamAPI {
         guard let url = URL(string: try baseURL() + "/x/v2/search/type?" + query) else { throw BiliError.badURL }
         let (data, _) = try await session.data(for: URLRequest(url: url))
         let wrapped = try decoder.decode(BiliResponse<SearchData>.self, from: data)
+        #if DEBUG
+        // 电视上看不到控制台以外的状态:只打印结果概要,绝不打印 access_key
+        let titles = (wrapped.data?.items?.elements ?? []).compactMap(\.title)
+        print("[roam-search] movie=\(movie) code=\(wrapped.code) message=\(wrapped.message ?? "") titles=\(titles)")
+        #endif
         guard wrapped.code == 0, let result = wrapped.data else {
             throw BiliError.api(code: wrapped.code, message: wrapped.message ?? "")
         }
